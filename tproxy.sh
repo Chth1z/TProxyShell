@@ -75,7 +75,31 @@ MAC_PROXY_MODE="blacklist"
 # Dry-run mode (disabled by default)
 DRY_RUN=0
 
-# Load configuration with default values
+log() {
+    level="$1"
+    message="$2"
+    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+
+    message=$(echo "$message" | sed 's/^ *//;s/ *$//')
+
+    case $level in
+        Debug) color_code="\033[0;36m" ;;
+        Info) color_code="\033[1;32m" ;;
+        Warn) color_code="\033[1;33m" ;;
+        Error) color_code="\033[1;31m" ;;
+        *)
+            level="Unknown"
+            color_code="\033[0m"
+            ;;
+    esac
+
+    if [ -t 1 ]; then
+        echo -e "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
+    else
+        echo "${timestamp} [${level}]: ${message}" >&2
+    fi
+}
+
 load_config() {
     log Info "Loading configuration with defaults..."
 
@@ -188,24 +212,65 @@ load_config() {
     log Info "Configuration loading completed"
 }
 
-log() {
-    level="$1"
-    message="$2"
-    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
-    color_code="\033[0m"
+validate_config() {
+    log Debug "Validating configuration..."
 
-    case $level in
-        Debug) color_code="\033[0;36m" ;;
-        Info) color_code="\033[1;32m" ;;
-        Warn) color_code="\033[1;33m" ;;
-        Error) color_code="\033[1;31m" ;;
+    if ! echo "$PROXY_TCP_PORT" | grep -E '^[0-9]+$' >/dev/null || [ "$PROXY_TCP_PORT" -lt 1 ] || [ "$PROXY_TCP_PORT" -gt 65535 ]; then
+        log Error "Invalid PROXY_TCP_PORT: $PROXY_TCP_PORT"
+        return 1
+    fi
+
+    if ! echo "$PROXY_UDP_PORT" | grep -E '^[0-9]+$' >/dev/null || [ "$PROXY_UDP_PORT" -lt 1 ] || [ "$PROXY_UDP_PORT" -gt 65535 ]; then
+        log Error "Invalid PROXY_UDP_PORT: $PROXY_UDP_PORT"
+        return 1
+    fi
+
+    if ! echo "$DNS_PORT" | grep -E '^[0-9]+$' >/dev/null || [ "$DNS_PORT" -lt 1 ] || [ "$DNS_PORT" -gt 65535 ]; then
+        log Error "Invalid DNS_PORT: $DNS_PORT"
+        return 1
+    fi
+
+    if ! echo "$MARK_VALUE" | grep -E '^[0-9]+$' >/dev/null || [ "$MARK_VALUE" -lt 1 ] || [ "$MARK_VALUE" -gt 2147483647 ]; then
+        log Error "Invalid MARK_VALUE: $MARK_VALUE"
+        return 1
+    fi
+
+    if ! echo "$MARK_VALUE6" | grep -E '^[0-9]+$' >/dev/null || [ "$MARK_VALUE6" -lt 1 ] || [ "$MARK_VALUE6" -gt 2147483647 ]; then
+        log Error "Invalid MARK_VALUE6: $MARK_VALUE6"
+        return 1
+    fi
+
+    if ! echo "$TABLE_ID" | grep -E '^[0-9]+$' >/dev/null || [ "$TABLE_ID" -lt 1 ] || [ "$TABLE_ID" -gt 65535 ]; then
+        log Error "Invalid TABLE_ID: $TABLE_ID"
+        return 1
+    fi
+
+    case "$APP_PROXY_MODE" in
+        blacklist | whitelist) ;;
+        *)
+            log Error "Invalid APP_PROXY_MODE: $APP_PROXY_MODE"
+            return 1
+            ;;
     esac
 
-    if [ -t 1 ]; then
-        echo -e "${color_code}${timestamp} [${level}]: ${message}\033[0m"
-    else
-        echo "${timestamp} [${level}]: ${message}"
-    fi
+    case "$MAC_PROXY_MODE" in
+        blacklist | whitelist) ;;
+        *)
+            log Error "Invalid MAC_PROXY_MODE: $MAC_PROXY_MODE"
+            return 1
+            ;;
+    esac
+
+    case "$DNS_HIJACK_ENABLE" in
+        0 | 1 | 2) ;;
+        *)
+            log Error "Invalid DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
+            return 1
+            ;;
+    esac
+
+    log Debug "Configuration validation passed"
+    return 0
 }
 
 check_root() {
@@ -245,7 +310,7 @@ check_dependencies() {
 
 check_kernel_feature() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "[DRY-RUN] Skip kernel feature check"
+        log Debug "[DRY-RUN] Skip kernel feature check for $1"
         return 0
     fi
 
@@ -253,19 +318,30 @@ check_kernel_feature() {
     config_name="CONFIG_${feature}"
 
     if [ -f /proc/config.gz ]; then
-        zcat /proc/config.gz | grep -qE "^${config_name}=[ym]$"
-        return 0
+        if zcat /proc/config.gz 2> /dev/null | grep -qE "^${config_name}=[ym]$"; then
+            log Debug "Kernel feature $feature is enabled"
+            return 0
+        else
+            log Debug "Kernel feature $feature is disabled or not found"
+            return 1
+        fi
     else
-        # Fallback method: check if module is loaded (only detects modules, built-in features need other methods like checking dmesg)
-        # lsmod | grep -q "$feature" || return 1
+        log Debug "Cannot check kernel feature $feature: /proc/config.gz not available"
         return 1
     fi
 }
 
 check_tproxy_support() {
-    if [ "$DRY_RUN" -eq 1 ] || check_kernel_feature "NETFILTER_XT_TARGET_TPROXY"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log Debug "[DRY-RUN] TPROXY support check skipped"
+        return 0
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_TARGET_TPROXY"; then
+        log Debug "Kernel TPROXY support confirmed"
         return 0
     else
+        log Warn "Kernel TPROXY support not available"
         return 1
     fi
 }
@@ -296,6 +372,7 @@ validate_user_group() {
 iptables() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] iptables $*"
+        return 0
     else
         command iptables -w 100 "$@"
     fi
@@ -304,6 +381,7 @@ iptables() {
 ip_rule() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip rule $*"
+        return 0
     else
         command ip rule "$@"
     fi
@@ -312,6 +390,7 @@ ip_rule() {
 ip_route() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip route $*"
+        return 0
     else
         command ip route "$@"
     fi
@@ -320,6 +399,7 @@ ip_route() {
 ip6tables() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip6tables $*"
+        return 0
     else
         command ip6tables -w 100 "$@"
     fi
@@ -328,6 +408,7 @@ ip6tables() {
 ip6_rule() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip -6 rule $*"
+        return 0
     else
         command ip -6 rule "$@"
     fi
@@ -336,6 +417,7 @@ ip6_rule() {
 ip6_route() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip -6 route $*"
+        return 0
     else
         command ip -6 route "$@"
     fi
@@ -344,10 +426,12 @@ ip6_route() {
 get_package_uid() {
     pkg="$1"
     if [ ! -r /data/system/packages.list ]; then
+        log Debug "Cannot read /data/system/packages.list"
         return 1
     fi
     line=$(grep -m1 "^${pkg}[[:space:]]" /data/system/packages.list 2> /dev/null || true)
     if [ -z "$line" ]; then
+        log Debug "Package not found in packages.list: $pkg"
         return 1
     fi
 
@@ -359,6 +443,7 @@ get_package_uid() {
     esac
     case "$uid" in
         '' | *[!0-9]*)
+            log Debug "Invalid UID format for package: $pkg"
             return 1
             ;;
         *)
@@ -379,13 +464,19 @@ find_packages_uid() {
                 user_prefix=$(echo "$token" | cut -d: -f1)
                 package=$(echo "$token" | cut -d: -f2-)
                 case "$user_prefix" in
-                    '' | *[!0-9]*) user_prefix=0 ;;
+                    '' | *[!0-9]*)
+                        log Warn "Invalid user prefix in token: $token, using 0"
+                        user_prefix=0
+                        ;;
                 esac
                 ;;
         esac
-        if uid_base=$(get_package_uid "$package" 2> /dev/null || true); then
+        if uid_base=$(get_package_uid "$package" 2> /dev/null); then
             final_uid=$((user_prefix * 100000 + uid_base))
             out="$out $final_uid"
+            log Debug "Resolved package $token to UID $final_uid"
+        else
+            log Warn "Failed to resolve UID for package: $package"
         fi
     done
     echo "$out" | awk '{$1=$1;print}'
@@ -437,7 +528,7 @@ download_cn_ip_list() {
 
     # Re-download if file doesn't exist or is older than 7 days
     if [ ! -f "$CN_IP_FILE" ] || [ "$(find "$CN_IP_FILE" -mtime +7 2> /dev/null)" ]; then
-        log Debug "Fetching latest China IP list from $CN_IP_URL"
+        log Info "Fetching latest China IP list from $CN_IP_URL"
         if [ "$DRY_RUN" -eq 1 ]; then
             log Debug "[DRY-RUN] curl -fsSL --connect-timeout 10 --retry 3 $CN_IP_URL -o $CN_IP_FILE.tmp"
         else
@@ -461,7 +552,7 @@ download_cn_ip_list() {
         log Info "Checking/Downloading China mainland IPv6 list to $CN_IPV6_FILE"
 
         if [ ! -f "$CN_IPV6_FILE" ] || [ "$(find "$CN_IPV6_FILE" -mtime +7 2> /dev/null)" ]; then
-            log Debug "Fetching latest China IPv6 list from $CN_IPV6_URL"
+            log Info "Fetching latest China IPv6 list from $CN_IPV6_URL"
             if [ "$DRY_RUN" -eq 1 ]; then
                 log Debug "[DRY-RUN] curl -fsSL --connect-timeout 10 --retry 3 $CN_IPV6_URL -o $CN_IPV6_FILE.tmp"
             else
@@ -506,7 +597,7 @@ setup_cn_ipset() {
 
     if [ -f "$CN_IP_FILE" ]; then
         log Debug "Loading IPv4 CIDR from $CN_IP_FILE"
-        ipv4_count=$(wc -l < "$CN_IP_FILE" || echo "0")
+        ipv4_count=$(wc -l < "$CN_IP_FILE" 2>/dev/null || echo "0")
 
         if [ "$DRY_RUN" -eq 1 ]; then
             log Debug "[DRY-RUN] Would load $ipv4_count IPv4 CIDR entries via ipset restore"
@@ -515,11 +606,11 @@ setup_cn_ipset() {
             temp_file=$(mktemp)
             {
                 echo "create cnip hash:net family inet hashsize 8192 maxelem 65536"
-                awk '{printf "add cnip %s\n", $0}' "$CN_IP_FILE"
+                awk 'NF > 0 {printf "add cnip %s\n", $0}' "$CN_IP_FILE"
             } > "$temp_file"
 
             if ipset restore -f "$temp_file" 2> /dev/null; then
-                log Debug "Successfully loaded $ipv4_count IPv4 CIDR entries"
+                log Info "Successfully loaded $ipv4_count IPv4 CIDR entries"
             else
                 log Error "Failed to create ipset 'cnip' or load IPv4 CIDR entries"
                 rm -f "$temp_file"
@@ -527,14 +618,17 @@ setup_cn_ipset() {
             fi
             rm -f "$temp_file"
         fi
+    else
+        log Warn "CN IP file not found: $CN_IP_FILE"
+        return 1
     fi
 
     log Info "ipset 'cnip' loaded with China mainland IPs"
 
-    if [ "$PROXY_IPV6" -eq 1 ] && [ -f "$CN_IPV6_FILE" ]; then
+    if [ "$PROXY_IPV6" -eq 1 ]; then
         if [ -f "$CN_IPV6_FILE" ]; then
             log Debug "Loading IPv6 CIDR from $CN_IPV6_FILE"
-            ipv6_count=$(wc -l < "$CN_IPV6_FILE" || echo "0")
+            ipv6_count=$(wc -l < "$CN_IPV6_FILE" 2>/dev/null || echo "0")
 
             if [ "$DRY_RUN" -eq 1 ]; then
                 log Debug "[DRY-RUN] Would load $ipv6_count IPv6 CIDR entries via ipset restore"
@@ -543,11 +637,11 @@ setup_cn_ipset() {
                 temp_file6=$(mktemp)
                 {
                     echo "create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
-                    awk '{printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
+                    awk 'NF > 0 {printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
                 } > "$temp_file6"
 
                 if ipset restore -f "$temp_file6" 2> /dev/null; then
-                    log Debug "Successfully loaded $ipv6_count IPv6 CIDR entries"
+                    log Info "Successfully loaded $ipv6_count IPv6 CIDR entries"
                 else
                     log Error "Failed to create ipset 'cnip6' or load IPv6 CIDR entries"
                     rm -f "$temp_file6"
@@ -555,10 +649,13 @@ setup_cn_ipset() {
                 fi
                 rm -f "$temp_file6"
             fi
+            log Info "ipset 'cnip6' loaded with China mainland IPv6 IPs"
+        else
+            log Warn "CN IPv6 file not found: $CN_IPV6_FILE"
         fi
-
-        log Info "ipset 'cnip6' loaded with China mainland IPv6 IPs"
     fi
+
+    return 0
 }
 
 setup_tproxy_chain4() {
@@ -737,15 +834,16 @@ setup_tproxy_chain4() {
             log Info "DNS hijack enabled using TPROXY mode"
             ;;
         2)
-            # Receive DNS traffic using non-TPROXY method
-            # Handle DNS using REDIRECT method
+            # Handle DNS using REDIRECT method in nat table
             safe_chain_create nat "NAT_DNS_HIJACK"
             iptables -t nat -A NAT_DNS_HIJACK -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            iptables -t nat -A NAT_DNS_HIJACK -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
 
             [ "${PROXY_MOBILE:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK
             [ "${PROXY_WIFI:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
 
             iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
+            iptables -t nat -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
             iptables -t nat -A OUTPUT -j NAT_DNS_HIJACK
             log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
             ;;
@@ -768,7 +866,7 @@ setup_redirect_chain4() {
     # Only TCP
     iptables -t nat -I PREROUTING -p tcp -j PROXY_PREROUTING
     iptables -t nat -I OUTPUT -p tcp -j PROXY_OUTPUT
-    log Debug "Added TCP rules to PREROUTING and OUTPUT chains (REDIRECT mode)"
+    log Info "Added TCP rules to PREROUTING and OUTPUT chains (REDIRECT mode)"
 
     iptables -t nat -A PROXY_PREROUTING -j BYPASS_IP
     iptables -t nat -A PROXY_PREROUTING -j PROXY_INTERFACE
@@ -877,7 +975,7 @@ setup_redirect_chain4() {
         iptables -t nat -A APP_CHAIN -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
         log Info "Added bypass for core user $CORE_USER:$CORE_GROUP (REDIRECT mode)"
     elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
-        iptables -t mangle -A APP_CHAIN -m mark --mark "$ROUTING_MARK" -j ACCEPT
+        iptables -t nat -A APP_CHAIN -m mark --mark "$ROUTING_MARK" -j ACCEPT
         log Info "Added bypass for marked traffic with core mark $ROUTING_MARK (REDIRECT mode)"
     else
         log Warn "Core traffic bypass not configured, may cause traffic loop (REDIRECT mode)"
@@ -1106,18 +1204,21 @@ setup_tproxy_chain6() {
             log Info "IPv6 DNS hijack enabled using TPROXY mode"
             ;;
         2)
-            # Receive DNS traffic using non-TPROXY method
-            # Handle DNS using REDIRECT method
+            # Handle DNS using REDIRECT method in nat table
             if check_kernel_feature "IP6_NF_NAT" && check_kernel_feature "IP6_NF_TARGET_REDIRECT"; then
                 safe_chain_create6 nat "NAT_DNS_HIJACK6"
                 ip6tables -t nat -A NAT_DNS_HIJACK6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+                ip6tables -t nat -A NAT_DNS_HIJACK6 -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
 
                 [ "${PROXY_MOBILE:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6
                 [ "${PROXY_WIFI:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6
 
                 ip6tables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
+                ip6tables -t nat -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
                 ip6tables -t nat -A OUTPUT -j NAT_DNS_HIJACK6
                 log Info "IPv6 DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
+            else
+                log Warn "IPv6 NAT REDIRECT not supported, skipping DNS hijack"
             fi
             ;;
     esac
@@ -1196,10 +1297,7 @@ setup_redirect_chain6() {
         log Info "IPv6 WiFi interface $WIFI_INTERFACE will bypass proxy (REDIRECT mode)"
     fi
     if [ "$PROXY_HOTSPOT" -eq 1 ]; then
-        if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
-            ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" ! -s 192.168.43.0/24 -j RETURN
-            log Info "IPv6 Hotspot interface $WIFI_INTERFACE will be proxied (REDIRECT mode)"
-        else
+        if [ "$HOTSPOT_INTERFACE" != "$WIFI_INTERFACE" ]; then
             ip6tables -t nat -A PROXY_INTERFACE6 -i "$HOTSPOT_INTERFACE" -j RETURN
             log Info "IPv6 Hotspot interface $HOTSPOT_INTERFACE will be proxied (REDIRECT mode)"
         fi
@@ -1311,35 +1409,63 @@ setup_redirect_chain6() {
 
 setup_routing4() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "DRY-RUN: Skipping actual routing setup"
+        log Debug "[DRY-RUN] Would setup IPv4 routing"
         return 0
     fi
-    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" > /dev/null 2>&1 || true
-    ip_route del local default dev lo table "$TABLE_ID" > /dev/null 2>&1 || true
-    ip_rule add fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID"
-    ip_route add local default dev lo table "$TABLE_ID"
+
+    log Info "Setting up IPv4 routing..."
+
+    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+    ip_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
+
+    if ! ip_rule add fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID"; then
+        log Error "Failed to add IPv4 routing rule"
+        return 1
+    fi
+
+    if ! ip_route add local default dev lo table "$TABLE_ID"; then
+        log Error "Failed to add IPv4 route"
+        ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+        return 1
+    fi
+
     echo 1 > /proc/sys/net/ipv4/ip_forward
     log Info "IPv4 routing setup completed"
 }
 
 setup_routing6() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "DRY-RUN: Skipping actual IPv6 routing setup"
+        log Debug "[DRY-RUN] Would setup IPv6 routing"
         return 0
     fi
-    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" > /dev/null 2>&1 || true
-    ip6_route del local default dev lo table "$TABLE_ID" > /dev/null 2>&1 || true
-    ip6_rule add fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID"
-    ip6_route add local default dev lo table "$TABLE_ID"
+
+    log Info "Setting up IPv6 routing..."
+
+    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+    ip6_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
+
+    if ! ip6_rule add fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID"; then
+        log Error "Failed to add IPv6 routing rule"
+        return 1
+    fi
+
+    if ! ip6_route add local default dev lo table "$TABLE_ID"; then
+        log Error "Failed to add IPv6 route"
+        ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+        return 1
+    fi
+
     echo 1 > /proc/sys/net/ipv6/ip_forward
     log Info "IPv6 routing setup completed"
 }
 
 cleanup_routing4() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "DRY-RUN: Skipping actual routing cleanup"
+        log Debug "[DRY-RUN] Would cleanup IPv4 routing"
         return 0
     fi
+
+    log Info "Cleaning up IPv4 routing..."
     ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
     ip_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
     echo 0 > /proc/sys/net/ipv4/ip_forward
@@ -1348,9 +1474,11 @@ cleanup_routing4() {
 
 cleanup_routing6() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "DRY-RUN: Skipping actual IPv6 routing cleanup"
+        log Debug "[DRY-RUN] Would cleanup IPv6 routing"
         return 0
     fi
+
+    log Info "Cleaning up IPv6 routing..."
     ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
     ip6_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
     echo 0 > /proc/sys/net/ipv6/ip_forward
@@ -1388,6 +1516,7 @@ cleanup_tproxy_chain4() {
         iptables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK 2> /dev/null || true
         iptables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK 2> /dev/null || true
         iptables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+        iptables -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
         iptables -t nat -D OUTPUT -j NAT_DNS_HIJACK 2> /dev/null || true
         iptables -t nat -F NAT_DNS_HIJACK 2> /dev/null || true
         iptables -t nat -X NAT_DNS_HIJACK 2> /dev/null || true
@@ -1426,6 +1555,7 @@ cleanup_tproxy_chain6() {
         ip6tables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6 2> /dev/null || true
         ip6tables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6 2> /dev/null || true
         ip6tables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+        ip6tables -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
         ip6tables -t nat -D OUTPUT -j NAT_DNS_HIJACK6 2> /dev/null || true
         ip6tables -t nat -F NAT_DNS_HIJACK6 2> /dev/null || true
         ip6tables -t nat -X NAT_DNS_HIJACK6 2> /dev/null || true
@@ -1498,6 +1628,11 @@ cleanup_ipset() {
 
 main() {
     cmd="${1:-}"
+
+    if ! validate_config; then
+        log Error "Configuration validation failed"
+        exit 1
+    fi
 
     case "$cmd" in
         start)
