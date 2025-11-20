@@ -104,7 +104,7 @@ log() {
 }
 
 load_config() {
-    log Info "Loading configuration with defaults..."
+    log Info "Loading configuration from environment or defaults..."
 
     # Proxy core configuration
     CORE_USER_GROUP="${CORE_USER_GROUP:-root:net_admin}"
@@ -1686,7 +1686,10 @@ main() {
                     BYPASS_CN_IP=0
                 else
                     download_cn_ip_list || log Warn "Failed to download CN IP list, continuing without it"
-                    setup_cn_ipset || log Warn "Failed to setup ipset, CN bypass disabled"
+                    if ! setup_cn_ipset; then
+                        log Error "Failed to setup ipset, CN bypass disabled"
+                        BYPASS_CN_IP=0
+                    fi
                 fi
             fi
 
@@ -1750,9 +1753,13 @@ main() {
                     BYPASS_CN_IP=0
                 else
                     download_cn_ip_list || log Warn "Failed to download CN IP list, continuing without it"
-                    setup_cn_ipset || log Warn "Failed to setup ipset, CN bypass disabled"
+                    if ! setup_cn_ipset; then
+                        log Error "Failed to setup ipset, CN bypass disabled"
+                        BYPASS_CN_IP=0
+                    fi
                 fi
             fi
+
             if [ "$use_tproxy" -eq 1 ]; then
                 log Info "Setting up TPROXY chains after restart"
                 setup_tproxy_chain4
@@ -1777,6 +1784,31 @@ main() {
     esac
 }
 
+while [ $# -gt 0 ]; do
+    case "$1" in
+        start | stop | restart)
+            if [ -n "$main_cmd" ]; then
+                log Error "Multiple commands specified."
+                exit 1
+            fi
+            main_cmd="$1"
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        *)
+            log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+if [ -z "$main_cmd" ]; then
+    log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+    exit 1
+fi
+
 check_root
 
 check_dependencies
@@ -1785,4 +1817,4 @@ load_config
 
 validate_user_group
 
-main "$@"
+main "$main_cmd"
