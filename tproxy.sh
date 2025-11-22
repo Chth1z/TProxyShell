@@ -84,8 +84,6 @@ log() {
     message="$2"
     timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
 
-    message=$(echo "$message" | sed 's/^ *//;s/ *$//')
-
     case $level in
         Debug) color_code="\033[0;36m" ;;
         Info) color_code="\033[1;32m" ;;
@@ -745,7 +743,8 @@ setup_chain() {
     $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "DNS_HIJACK_OUT$suffix"
 
     if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -j ACCEPT
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
         log Info "Added local address type bypass"
     fi
 
@@ -775,7 +774,8 @@ setup_chain() {
             ipset_name="cnip6"
         fi
         if command -v ipset > /dev/null 2>&1 && ipset list "$ipset_name" > /dev/null 2>&1; then
-            $cmd -t "$table" -A "BYPASS_IP$suffix" -m set --match-set "$ipset_name" dst -j ACCEPT
+            $cmd -t "$table" -A "BYPASS_IP$suffix" -m set --match-set "$ipset_name" dst -p udp ! --dport 53 -j ACCEPT
+            $cmd -t "$table" -A "BYPASS_IP$suffix" -m set --match-set "$ipset_name" dst ! -p udp -j ACCEPT
             log Info "Added ipset-based CN IP bypass rule"
         else
             log Warn "ipset '$ipset_name' not available, skipping CN IP bypass"
