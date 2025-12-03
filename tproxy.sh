@@ -242,6 +242,11 @@ validate_config() {
         return 1
     fi
 
+    if ! echo "$DNS_HIJACK_ENABLE" | grep -E '^[0-2]$' > /dev/null; then
+        log Error "Invalid DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE (must be 0=disabled, 1=tproxy, 2=redirect)"
+        return 1
+    fi
+
     if ! echo "$DNS_PORT" | grep -E '^[0-9]+$' > /dev/null || [ "$DNS_PORT" -lt 1 ] || [ "$DNS_PORT" -gt 65535 ]; then
         log Error "Invalid DNS_PORT: $DNS_PORT"
         return 1
@@ -295,14 +300,6 @@ validate_config() {
         blacklist | whitelist) ;;
         *)
             log Error "Invalid MAC_PROXY_MODE: $MAC_PROXY_MODE"
-            return 1
-            ;;
-    esac
-
-    case "$DNS_HIJACK_ENABLE" in
-        0 | 1 | 2) ;;
-        *)
-            log Error "Invalid DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
             return 1
             ;;
     esac
@@ -676,13 +673,15 @@ setup_cn_ipset() {
 }
 
 # Unified setup function for both IPv4 and IPv6 with mode selection
-setup_chain() {
+setup_proxy_chain() {
     family="$1"
     mode="$2" # tproxy or redirect
     suffix=""
+    mark="$MARK_VALUE"
 
     if [ "$family" = "6" ]; then
         suffix="6"
+        mark="$MARK_VALUE6"
     fi
 
     # Set mode name for logging
@@ -704,7 +703,7 @@ setup_chain() {
     fi
 
     table="mangle"
-    if [ "$mode" = "redirect" ] || ([ "$mode" = "tproxy" ] && [ "$family" = "6" ] && [ "$PROXY_MODE" != "1" ]); then
+    if [ "$mode" = "redirect" ]; then
         table="nat"
     fi
 
@@ -713,23 +712,11 @@ setup_chain() {
         safe_chain_create "$family" "$table" "$c"
     done
 
-    # Add rules to main chains
     cmd=""
     if [ "$family" = "6" ]; then
         cmd="ip6tables"
     else
         cmd="iptables"
-    fi
-
-    if [ "$PROXY_TCP" -eq 1 ]; then
-        $cmd -t "$table" -I PREROUTING -p tcp -j "PROXY_PREROUTING$suffix"
-        $cmd -t "$table" -I OUTPUT -p tcp -j "PROXY_OUTPUT$suffix"
-        log Info "Added TCP rules to PREROUTING and OUTPUT chains"
-    fi
-    if [ "$PROXY_UDP" -eq 1 ] && [ "$mode" = "tproxy" ]; then
-        $cmd -t "$table" -I PREROUTING -p udp -j "PROXY_PREROUTING$suffix"
-        $cmd -t "$table" -I OUTPUT -p udp -j "PROXY_OUTPUT$suffix"
-        log Info "Added UDP rules to PREROUTING and OUTPUT chains"
     fi
 
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix"
@@ -759,7 +746,7 @@ setup_chain() {
         done
     else
         for subnet4 in 0.0.0.0/8 10.0.0.0/8 100.0.0.0/8 127.0.0.0/8 \
-            169.254.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 \
+            169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 \
             192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 \
             224.0.0.0/4 240.0.0.0/4 255.255.255.255/32; do
             $cmd -t "$table" -A "BYPASS_IP$suffix" -d "$subnet4" -p udp ! --dport 53 -j ACCEPT
@@ -782,6 +769,7 @@ setup_chain() {
         fi
     fi
 
+    log Info "Configuring interface proxy rules"
     $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i lo -j RETURN
     if [ "$PROXY_MOBILE" -eq 1 ]; then
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$MOBILE_INTERFACE" -j RETURN
@@ -826,37 +814,42 @@ setup_chain() {
         log Info "USB interface $USB_INTERFACE will bypass proxy"
     fi
     $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -j ACCEPT
+    log Info "Interface proxy rules configuration completed"
 
     if [ "$MAC_FILTER_ENABLE" -eq 1 ] && [ "$PROXY_HOTSPOT" -eq 1 ] && [ -n "$HOTSPOT_INTERFACE" ]; then
-        log Info "Setting up MAC address filter rules for interface $HOTSPOT_INTERFACE"
-        case "$MAC_PROXY_MODE" in
-            blacklist)
-                if [ -n "$BYPASS_MACS_LIST" ]; then
-                    for mac in $BYPASS_MACS_LIST; do
-                        if [ -n "$mac" ]; then
-                            $cmd -t "$table" -A "MAC_CHAIN$suffix" -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j ACCEPT
-                            log Info "Added MAC bypass rule for $mac"
-                        fi
-                    done
-                else
-                    log Warn "MAC blacklist mode enabled but no bypass MACs configured"
-                fi
-                $cmd -t "$table" -A "MAC_CHAIN$suffix" -i "$HOTSPOT_INTERFACE" -j RETURN
-                ;;
-            whitelist)
-                if [ -n "$PROXY_MACS_LIST" ]; then
-                    for mac in $PROXY_MACS_LIST; do
-                        if [ -n "$mac" ]; then
-                            $cmd -t "$table" -A "MAC_CHAIN$suffix" -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j RETURN
-                            log Info "Added MAC proxy rule for $mac"
-                        fi
-                    done
-                else
-                    log Warn "MAC whitelist mode enabled but no proxy MACs configured"
-                fi
-                $cmd -t "$table" -A "MAC_CHAIN$suffix" -i "$HOTSPOT_INTERFACE" -j ACCEPT
-                ;;
-        esac
+        if check_kernel_feature "NETFILTER_XT_MATCH_MAC"; then
+            log Info "Setting up MAC address filter rules for interface $HOTSPOT_INTERFACE"
+            case "$MAC_PROXY_MODE" in
+                blacklist)
+                    if [ -n "$BYPASS_MACS_LIST" ]; then
+                        for mac in $BYPASS_MACS_LIST; do
+                            if [ -n "$mac" ]; then
+                                $cmd -t "$table" -A "MAC_CHAIN$suffix" -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j ACCEPT
+                                log Info "Added MAC bypass rule for $mac"
+                            fi
+                        done
+                    else
+                        log Warn "MAC blacklist mode enabled but no bypass MACs configured"
+                    fi
+                    $cmd -t "$table" -A "MAC_CHAIN$suffix" -i "$HOTSPOT_INTERFACE" -j RETURN
+                    ;;
+                whitelist)
+                    if [ -n "$PROXY_MACS_LIST" ]; then
+                        for mac in $PROXY_MACS_LIST; do
+                            if [ -n "$mac" ]; then
+                                $cmd -t "$table" -A "MAC_CHAIN$suffix" -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j RETURN
+                                log Info "Added MAC proxy rule for $mac"
+                            fi
+                        done
+                    else
+                        log Warn "MAC whitelist mode enabled but no proxy MACs configured"
+                    fi
+                    $cmd -t "$table" -A "MAC_CHAIN$suffix" -i "$HOTSPOT_INTERFACE" -j ACCEPT
+                    ;;
+            esac
+        else
+            log Warn "MAC filtering requires NETFILTER_XT_MATCH_MAC kernel feature which is not available"
+        fi
     fi
 
     if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
@@ -869,92 +862,142 @@ setup_chain() {
         log Warn "Core traffic bypass not configured, may cause traffic loop"
     fi
 
-    if [ "$APP_PROXY_ENABLE" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
-        log Info "Setting up application filter rules in $APP_PROXY_MODE mode"
-        case "$APP_PROXY_MODE" in
-            blacklist)
-                if [ -n "$BYPASS_APPS_LIST" ]; then
-                    uids=$(find_packages_uid "$BYPASS_APPS_LIST" || true)
-                    for uid in $uids; do
-                        if [ -n "$uid" ]; then
-                            $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$uid" -j ACCEPT
-                            log Info "Added bypass for UID $uid"
-                        fi
-                    done
-                else
-                    log Warn "App blacklist mode enabled but no bypass apps configured"
-                fi
-                $cmd -t "$table" -A "APP_CHAIN$suffix" -j RETURN
-                ;;
-            whitelist)
-                if [ -n "$PROXY_APPS_LIST" ]; then
-                    uids=$(find_packages_uid "$PROXY_APPS_LIST" || true)
-                    for uid in $uids; do
-                        if [ -n "$uid" ]; then
-                            $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$uid" -j RETURN
-                            log Info "Added proxy for UID $uid"
-                        fi
-                    done
-                else
-                    log Warn "App whitelist mode enabled but no proxy apps configured"
-                fi
-                $cmd -t "$table" -A "APP_CHAIN$suffix" -j ACCEPT
-                ;;
-        esac
+    if [ "$APP_PROXY_ENABLE" -eq 1 ]; then
+        if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+            log Info "Setting up application filter rules in $APP_PROXY_MODE mode"
+            case "$APP_PROXY_MODE" in
+                blacklist)
+                    if [ -n "$BYPASS_APPS_LIST" ]; then
+                        uids=$(find_packages_uid "$BYPASS_APPS_LIST" || true)
+                        for uid in $uids; do
+                            if [ -n "$uid" ]; then
+                                $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$uid" -j ACCEPT
+                                log Info "Added bypass for UID $uid"
+                            fi
+                        done
+                    else
+                        log Warn "App blacklist mode enabled but no bypass apps configured"
+                    fi
+                    $cmd -t "$table" -A "APP_CHAIN$suffix" -j RETURN
+                    ;;
+                whitelist)
+                    if [ -n "$PROXY_APPS_LIST" ]; then
+                        uids=$(find_packages_uid "$PROXY_APPS_LIST" || true)
+                        for uid in $uids; do
+                            if [ -n "$uid" ]; then
+                                $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$uid" -j RETURN
+                                log Info "Added proxy for UID $uid"
+                            fi
+                        done
+                    else
+                        log Warn "App whitelist mode enabled but no proxy apps configured"
+                    fi
+                    $cmd -t "$table" -A "APP_CHAIN$suffix" -j ACCEPT
+                    ;;
+            esac
+        else
+            log Warn "Application filtering requires NETFILTER_XT_MATCH_OWNER kernel feature which is not available"
+        fi
     fi
 
-    case "$DNS_HIJACK_ENABLE" in
-        1)
-            if [ "$mode" = "tproxy" ]; then
-                # Handle DNS from interfaces in PREROUTING chain (DNS_HIJACK_PRE)
-                $cmd -t "$table" -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "${MARK_VALUE}${suffix#6}"
-                $cmd -t "$table" -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "${MARK_VALUE}${suffix#6}"
-                # Handle local DNS hijacking in OUTPUT chain (DNS_HIJACK_OUT)
-                $cmd -t "$table" -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j MARK --set-mark "${MARK_VALUE}${suffix#6}"
-                $cmd -t "$table" -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j MARK --set-mark "${MARK_VALUE}${suffix#6}"
-                log Info "DNS hijack enabled using TPROXY mode"
-            else
-                # Handle DNS using REDIRECT method
-                safe_chain_create "$family" "nat" "NAT_DNS_HIJACK$suffix"
-                $cmd -t nat -A "NAT_DNS_HIJACK$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-                $cmd -t nat -A "NAT_DNS_HIJACK$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-                log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
-            fi
-            ;;
-        2)
-            # Handle DNS using REDIRECT method
-            safe_chain_create "$family" "nat" "NAT_DNS_HIJACK$suffix"
-            $cmd -t nat -A "NAT_DNS_HIJACK$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-            $cmd -t nat -A "NAT_DNS_HIJACK$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-            log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
-            ;;
-    esac
+    if [ "$DNS_HIJACK_ENABLE" -ne 0 ]; then
+        if [ "$DNS_HIJACK_ENABLE" -eq 1 ] && [ "$mode" = "tproxy" ]; then
+            setup_dns_hijack "$family" "tproxy"
+        elif [ "$DNS_HIJACK_ENABLE" -eq 2 ] || [ "$mode" = "redirect" ]; then
+            setup_dns_hijack "$family" "redirect"
+        fi
+    fi
 
     if [ "$mode" = "tproxy" ]; then
-        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "${MARK_VALUE}${suffix#6}"
-        if [ "$PROXY_UDP" -eq 1 ]; then
-            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "${MARK_VALUE}${suffix#6}"
-        fi
-        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j MARK --set-mark "${MARK_VALUE}${suffix#6}"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j MARK --set-mark "$mark"
     else
         # REDIRECT mode
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
         $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
     fi
 
+    # Add rules to main chains
+    if [ "$PROXY_UDP" -eq 1 ]; then
+        $cmd -t "$table" -I PREROUTING -p udp -j "PROXY_PREROUTING$suffix"
+        $cmd -t "$table" -I OUTPUT -p udp -j "PROXY_OUTPUT$suffix"
+        log Info "Added UDP rules to PREROUTING and OUTPUT chains"
+    fi
+    if [ "$PROXY_TCP" -eq 1 ]; then
+        $cmd -t "$table" -I PREROUTING -p tcp -j "PROXY_PREROUTING$suffix"
+        $cmd -t "$table" -I OUTPUT -p tcp -j "PROXY_OUTPUT$suffix"
+        log Info "Added TCP rules to PREROUTING and OUTPUT chains"
+    fi
+
     log Info "$mode_name chains for IPv${family} setup completed"
 }
 
+setup_dns_hijack() {
+    family="$1"
+    mode="$2" # tproxy or redirect
+    suffix=""
+    mark="$MARK_VALUE"
+    cmd=""
+
+    if [ "$family" = "6" ]; then
+        suffix="6"
+        mark="$MARK_VALUE6"
+        cmd="ip6tables"
+    else
+        cmd="iptables"
+    fi
+
+    table="mangle"
+    if [ "$mode" = "redirect" ]; then
+        table="nat"
+    fi
+
+    case "$mode" in
+        tproxy)
+            # Handle DNS from interfaces in PREROUTING chain (DNS_HIJACK_PRE)
+            $cmd -t "$table" -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
+            $cmd -t "$table" -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
+            # Handle local DNS hijacking in OUTPUT chain (DNS_HIJACK_OUT)
+            $cmd -t "$table" -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j MARK --set-mark "$mark"
+            $cmd -t "$table" -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j MARK --set-mark "$mark"
+            log Info "DNS hijack enabled using TPROXY mode"
+            ;;
+        redirect)
+            # Handle DNS using REDIRECT method
+            if [ "$family" = "6" ] && {
+                ! check_kernel_feature "IP6_NF_NAT" || ! check_kernel_feature "IP6_NF_TARGET_REDIRECT"
+            }; then
+                log Warn "IPv6: Kernel does not support IPv6 NAT or REDIRECT, skipping IPv6 DNS hijack"
+                return 0
+            fi
+            safe_chain_create "$family" "nat" "NAT_DNS_HIJACK$suffix"
+            $cmd -t nat -A "NAT_DNS_HIJACK$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "NAT_DNS_HIJACK$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+
+            [ "$PROXY_MOBILE" -eq 1 ] && $cmd -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j "NAT_DNS_HIJACK$suffix"
+            [ "$PROXY_WIFI" -eq 1 ] && $cmd -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j "NAT_DNS_HIJACK$suffix"
+            [ "$PROXY_USB" -eq 1 ] && $cmd -t nat -A PREROUTING -i "$USB_INTERFACE" -j "NAT_DNS_HIJACK$suffix"
+
+            $cmd -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
+            $cmd -t nat -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
+            $cmd -t nat -A OUTPUT -j "NAT_DNS_HIJACK$suffix"
+
+            log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
+            ;;
+    esac
+}
+
 setup_tproxy_chain4() {
-    setup_chain 4 "tproxy"
+    setup_proxy_chain 4 "tproxy"
 }
 
 setup_redirect_chain4() {
-    setup_chain 4 "redirect"
+    setup_proxy_chain 4 "redirect"
 }
 
 setup_tproxy_chain6() {
-    setup_chain 6 "tproxy"
+    setup_proxy_chain 6 "tproxy"
 }
 
 setup_redirect_chain6() {
@@ -962,7 +1005,7 @@ setup_redirect_chain6() {
         log Warn "IPv6: Kernel does not support IPv6 NAT or REDIRECT, skipping IPv6 proxy setup"
         return 0
     fi
-    setup_chain 6 "redirect"
+    setup_proxy_chain 6 "redirect"
 }
 
 setup_routing4() {
@@ -1037,7 +1080,7 @@ cleanup_chain() {
     log Info "Cleaning up $mode_name chains for IPv${family}"
 
     table="mangle"
-    if [ "$mode" = "redirect" ] || ([ "$mode" = "tproxy" ] && [ "$family" = "6" ] && [ "$PROXY_MODE" != "1" ]); then
+    if [ "$mode" = "redirect" ]; then
         table="nat"
     fi
 
@@ -1083,11 +1126,12 @@ cleanup_chain() {
     done
 
     # Remove DNS rules if applicable
-    if [ "$mode" = "tproxy" ] && [ "$DNS_HIJACK_ENABLE" = "2" ]; then
+    if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
         $cmd -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
-        $cmd -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
-        $cmd -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+        $cmd -t nat -A PREROUTING -i "$USB_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
+        $cmd -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT 2> /dev/null || true
+        $cmd -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT 2> /dev/null || true
         $cmd -t nat -D OUTPUT -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -F "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -X "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
