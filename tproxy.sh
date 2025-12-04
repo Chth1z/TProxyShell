@@ -80,11 +80,14 @@ readonly DEFAULT_MAC_PROXY_MODE="blacklist"
 readonly DEFAULT_DRY_RUN=0
 
 log() {
-    level="$1"
-    message="$2"
+    local level="$1"
+    local message="$2"
+    local timestamp
+    local color_code
+
     timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
 
-    case $level in
+    case "$level" in
         Debug) color_code="\033[0;36m" ;;
         Info) color_code="\033[1;32m" ;;
         Warn) color_code="\033[1;33m" ;;
@@ -96,9 +99,9 @@ log() {
     esac
 
     if [ -t 1 ]; then
-        echo -e "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
+        printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
     else
-        echo "${timestamp} [${level}]: ${message}" >&2
+        printf "%s\n" "${timestamp} [${level}]: ${message}" >&2
     fi
 }
 
@@ -327,8 +330,9 @@ check_dependencies() {
 
     export PATH="$PATH:/data/data/com.termux/files/usr/bin"
 
-    missing=""
-    required_commands="ip iptables curl"
+    local missing=""
+    local required_commands="ip iptables curl"
+    local cmd
 
     for cmd in $required_commands; do
         if ! command -v "$cmd" > /dev/null 2>&1; then
@@ -349,8 +353,8 @@ check_kernel_feature() {
         return 0
     fi
 
-    feature="$1"
-    config_name="CONFIG_${feature}"
+    local feature="$1"
+    local config_name="CONFIG_${feature}"
 
     if [ -f /proc/config.gz ]; then
         if zcat /proc/config.gz 2> /dev/null | grep -qE "^${config_name}=[ym]$"; then
@@ -382,11 +386,10 @@ check_tproxy_support() {
 }
 
 # Unified command wrapper functions
-run_command() {
-    family="$1"
-    cmd="$2"
-    shift 2
-    args="$*"
+run_ipt_command() {
+    local cmd="$1"
+    shift
+    local args="$*"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] $cmd $args"
@@ -397,11 +400,11 @@ run_command() {
 }
 
 iptables() {
-    run_command 4 iptables "$@"
+    run_ipt_command iptables "$@"
 }
 
 ip6tables() {
-    run_command 6 ip6tables "$@"
+    run_ipt_command ip6tables "$@"
 }
 
 ip_rule() {
@@ -441,7 +444,9 @@ ip6_route() {
 }
 
 get_package_uid() {
-    pkg="$1"
+    local pkg="$1"
+    local line
+    local uid
     if [ ! -r /data/system/packages.list ]; then
         log Debug "Cannot read /data/system/packages.list"
         return 1
@@ -471,11 +476,14 @@ get_package_uid() {
 }
 
 find_packages_uid() {
-    out=""
+    local out
+    local token
+    local uid_base
+    local final_uid
     # shellcheck disable=SC2048
     for token in $*; do
-        user_prefix=0
-        package="$token"
+        local user_prefix=0
+        local package="$token"
         case "$token" in
             *:*)
                 user_prefix=$(echo "$token" | cut -d: -f1)
@@ -499,36 +507,37 @@ find_packages_uid() {
     echo "$out" | awk '{$1=$1;print}'
 }
 
-# Unified chain management functions
 safe_chain_exists() {
-    family="$1"
-    table="$2"
-    chain="$3"
+    local family="$1"
+    local table="$2"
+    local chain="$3"
+    local cmd="iptables"
+
     if [ "$family" = "6" ]; then
         cmd="ip6tables"
-    else
-        cmd="iptables"
     fi
 
     if $cmd -t "$table" -L "$chain" > /dev/null 2>&1; then
         return 0
     fi
+
     return 1
 }
 
 safe_chain_create() {
-    family="$1"
-    table="$2"
-    chain="$3"
+    local family="$1"
+    local table="$2"
+    local chain="$3"
+    local cmd="iptables"
+
     if [ "$family" = "6" ]; then
         cmd="ip6tables"
-    else
-        cmd="iptables"
     fi
 
     if ! safe_chain_exists "$family" "$table" "$chain"; then
         $cmd -t "$table" -N "$chain"
     fi
+
     $cmd -t "$table" -F "$chain"
 }
 
@@ -674,11 +683,11 @@ setup_cn_ipset() {
 
 # Unified setup function for both IPv4 and IPv6 with mode selection
 setup_proxy_chain() {
-    family="$1"
-    mode="$2" # tproxy or redirect
-    suffix=""
-    mark="$MARK_VALUE"
-    cmd="iptables"
+    local family="$1"
+    local mode="$2" # tproxy or redirect
+    local suffix=""
+    local mark="$MARK_VALUE"
+    local cmd="iptables"
 
     if [ "$family" = "6" ]; then
         suffix="6"
@@ -687,7 +696,7 @@ setup_proxy_chain() {
     fi
 
     # Set mode name for logging
-    mode_name="$mode"
+    local mode_name="$mode"
     if [ "$mode" = "tproxy" ]; then
         mode_name="TPROXY"
     else
@@ -697,14 +706,14 @@ setup_proxy_chain() {
     log Info "Setting up $mode_name chains for IPv${family}"
 
     # Define chains based on family
-    chains=""
+    local chains=""
     if [ "$family" = "6" ]; then
         chains="PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
     else
         chains="PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
     fi
 
-    table="mangle"
+    local table="mangle"
     if [ "$mode" = "redirect" ]; then
         table="nat"
     fi
@@ -784,7 +793,7 @@ setup_proxy_chain() {
     fi
     if [ "$PROXY_HOTSPOT" -eq 1 ]; then
         if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
-            subnet=""
+            local subnet=""
             if [ "$family" = "6" ]; then
                 subnet="fe80::/10"
             else
@@ -933,11 +942,11 @@ setup_proxy_chain() {
 }
 
 setup_dns_hijack() {
-    family="$1"
-    mode="$2"
-    suffix=""
-    mark="$MARK_VALUE"
-    cmd="iptables"
+    local family="$1"
+    local mode="$2"
+    local suffix=""
+    local mark="$MARK_VALUE"
+    local cmd="iptables"
 
     if [ "$family" = "6" ]; then
         suffix="6"
@@ -1063,10 +1072,10 @@ setup_routing6() {
 
 # Unified cleanup function for both IPv4 and IPv6 with mode selection
 cleanup_chain() {
-    family="$1"
-    mode="$2" # tproxy or redirect
-    suffix=""
-    cmd="iptables"
+    local family="$1"
+    local mode="$2"
+    local suffix=""
+    local cmd="iptables"
 
     if [ "$family" = "6" ]; then
         suffix="6"
@@ -1074,7 +1083,7 @@ cleanup_chain() {
     fi
 
     # Set mode name for logging
-    mode_name="$mode"
+    local mode_name="$mode"
     if [ "$mode" = "tproxy" ]; then
         mode_name="TPROXY"
     else
@@ -1083,7 +1092,7 @@ cleanup_chain() {
 
     log Info "Cleaning up $mode_name chains for IPv${family}"
 
-    table="mangle"
+    local table="mangle"
     if [ "$mode" = "redirect" ]; then
         table="nat"
     fi
@@ -1109,7 +1118,7 @@ cleanup_chain() {
     fi
 
     # Define chains based on family
-    chains=""
+    local chains=""
     if [ "$family" = "6" ]; then
         chains="PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
     else
@@ -1204,11 +1213,11 @@ cleanup_ipset() {
 }
 
 detect_proxy_mode() {
-    use_tproxy=0
+    USE_TPROXY=0
     case "$PROXY_MODE" in
         0)
             if check_tproxy_support; then
-                use_tproxy=1
+                USE_TPROXY=1
                 log Info "Kernel supports TPROXY, using TPROXY mode (auto)"
             else
                 log Warn "Kernel does not support TPROXY, falling back to REDIRECT mode (auto)"
@@ -1216,7 +1225,7 @@ detect_proxy_mode() {
             ;;
         1)
             if check_tproxy_support; then
-                use_tproxy=1
+                USE_TPROXY=1
                 log Info "Using TPROXY mode (forced by configuration)"
             else
                 log Error "TPROXY mode forced but kernel does not support TPROXY"
@@ -1244,7 +1253,7 @@ start_proxy() {
         fi
     fi
 
-    if [ "$use_tproxy" -eq 1 ]; then
+    if [ "$USE_TPROXY" -eq 1 ]; then
         setup_tproxy_chain4
         setup_routing4
         if [ "$PROXY_IPV6" -eq 1 ]; then
@@ -1262,7 +1271,7 @@ start_proxy() {
 
 stop_proxy() {
     log Info "Stopping proxy..."
-    if [ "$use_tproxy" -eq 1 ]; then
+    if [ "$USE_TPROXY" -eq 1 ]; then
         log Info "Cleaning up TPROXY chains"
         cleanup_tproxy_chain4
         cleanup_routing4
@@ -1282,16 +1291,16 @@ stop_proxy() {
 }
 
 parse_args() {
-    main_cmd=""
+    MAIN_CMD=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
             start | stop | restart)
-                if [ -n "$main_cmd" ]; then
+                if [ -n "$MAIN_CMD" ]; then
                     log Error "Multiple commands specified."
                     exit 1
                 fi
-                main_cmd="$1"
+                MAIN_CMD="$1"
                 ;;
             --dry-run)
                 DRY_RUN=1
@@ -1304,15 +1313,13 @@ parse_args() {
         shift
     done
 
-    if [ -z "$main_cmd" ]; then
+    if [ -z "$MAIN_CMD" ]; then
         log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
         exit 1
     fi
 }
 
 main() {
-    cmd="${1:-}"
-
     if ! validate_config; then
         log Error "Configuration validation failed"
         exit 1
@@ -1320,7 +1327,7 @@ main() {
 
     detect_proxy_mode
 
-    case "$cmd" in
+    case "$1" in
         start)
             start_proxy
             ;;
@@ -1349,4 +1356,4 @@ load_config
 
 parse_args "$@"
 
-main "$main_cmd"
+main "$MAIN_CMD"
