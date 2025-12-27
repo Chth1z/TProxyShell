@@ -739,6 +739,11 @@ setup_proxy_chain() {
         log Info "Added local address type bypass"
     fi
 
+    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
+        log Info "Added reply connection direction bypass"
+    fi
+
     # Add private IP ranges based on family
     if [ "$family" = "6" ]; then
         for subnet6 in ::/128 ::1/128 ::ffff:0:0/96 \
@@ -958,11 +963,9 @@ setup_dns_hijack() {
     case "$mode" in
         tproxy)
             # Handle DNS from interfaces in PREROUTING chain (DNS_HIJACK_PRE)
-            $cmd -t mangle -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
-            $cmd -t mangle -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
+            $cmd -t mangle -A "DNS_HIJACK_PRE$suffix" -j RETURN
             # Handle local DNS hijacking in OUTPUT chain (DNS_HIJACK_OUT)
-            $cmd -t mangle -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j MARK --set-mark "$mark"
-            $cmd -t mangle -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j MARK --set-mark "$mark"
+            $cmd -t mangle -A "DNS_HIJACK_OUT$suffix" -j RETURN
 
             log Info "DNS hijack enabled using TPROXY mode"
             ;;
@@ -1300,6 +1303,16 @@ stop_proxy() {
     log Info "Proxy stopped"
 }
 
+show_usage() {
+    cat << EOF
+Usage: $(basename "$0") {start|stop|restart} [--dry-run]
+
+Options:
+  --dry-run    Run without making actual changes
+  -h, --help   Show this help message
+EOF
+}
+
 parse_args() {
     MAIN_CMD=""
 
@@ -1315,8 +1328,13 @@ parse_args() {
             --dry-run)
                 DRY_RUN=1
                 ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
             *)
-                log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+                log Error "Invalid argument: $1"
+                show_usage
                 exit 1
                 ;;
         esac
@@ -1324,20 +1342,25 @@ parse_args() {
     done
 
     if [ -z "$MAIN_CMD" ]; then
-        log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+        log Error "No command specified"
+        show_usage
         exit 1
     fi
 }
 
 main() {
+    load_config
     if ! validate_config; then
         log Error "Configuration validation failed"
         exit 1
     fi
 
+    check_root
+    check_dependencies
+
     detect_proxy_mode
 
-    case "$1" in
+    case "$MAIN_CMD" in
         start)
             start_proxy
             ;;
@@ -1352,18 +1375,13 @@ main() {
             log Info "Proxy restarted"
             ;;
         *)
-            log Error "Usage: %s {start|stop|restart} [--dry-run]\n" "$(basename "$0")"
+            log Error "Invalid command: $MAIN_CMD"
+            show_usage
             exit 1
             ;;
     esac
 }
 
-check_root
-
-check_dependencies
-
-load_config
-
 parse_args "$@"
 
-main "$MAIN_CMD"
+main
