@@ -6,7 +6,7 @@
 # Proxy running user and group
 readonly DEFAULT_CORE_USER_GROUP="root:net_admin"
 # Proxy traffic mark
-readonly DEFAULT_ROUTING_MARK=""
+readonly DEFAULT_ROUTING_MARK="2025"
 # Proxy ports (transparent proxy listening ports)
 readonly DEFAULT_PROXY_TCP_PORT="1536"
 readonly DEFAULT_PROXY_UDP_PORT="1536"
@@ -33,11 +33,11 @@ readonly DEFAULT_USB_INTERFACE="rndis+"
 # Proxy switches
 readonly DEFAULT_PROXY_MOBILE=1
 readonly DEFAULT_PROXY_WIFI=1
-readonly DEFAULT_PROXY_HOTSPOT=0
-readonly DEFAULT_PROXY_USB=0
+readonly DEFAULT_PROXY_HOTSPOT=1
+readonly DEFAULT_PROXY_USB=1
 readonly DEFAULT_PROXY_TCP=1
 readonly DEFAULT_PROXY_UDP=1
-readonly DEFAULT_PROXY_IPV6=0
+readonly DEFAULT_PROXY_IPV6=1
 
 # Mark values
 readonly DEFAULT_MARK_VALUE=20
@@ -47,12 +47,12 @@ readonly DEFAULT_MARK_VALUE6=25
 readonly DEFAULT_TABLE_ID=2025
 
 # Per-app proxy (use space to separate package names, supports user:package format)
-readonly DEFAULT_APP_PROXY_ENABLE=0
-readonly DEFAULT_PROXY_APPS_LIST=""
+readonly DEFAULT_APP_PROXY_ENABLE=1
+readonly DEFAULT_PROXY_APPS_LIST="0:com.android.shell 0:com.android.vending 0:com.google.android.gms 0:com.google.android.googlequicksearchbox 0:com.osp.app.signin 0:com.sec.android.app.myfiles 0:com.ichi2.anki 0:com.perol.pixez 0:com.reddit.frontpage 0:com.samsung.android.email.provider 0:com.sec.android.app.sbrowser 0:com.twitter.android 0:me.weishu.kernelsu 0:org.telegram.messenger 0:proton.android.authenticator"
 # Example: "com.example.app com.other"
 readonly DEFAULT_BYPASS_APPS_LIST=""
 # Example: "com.android.shell"
-readonly DEFAULT_APP_PROXY_MODE="blacklist"
+readonly DEFAULT_APP_PROXY_MODE="whitelist"
 # "blacklist" or "whitelist"
 
 # CN IP bypass configuration
@@ -79,29 +79,41 @@ readonly DEFAULT_MAC_PROXY_MODE="blacklist"
 # Dry-run mode (disabled by default)
 readonly DEFAULT_DRY_RUN=0
 
+readonly LOG_LEVEL=1
+
 log() {
     local level="$1"
     local message="$2"
     local timestamp
     local color_code
-
-    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    local level_score=0
 
     case "$level" in
-        Debug) color_code="\033[0;36m" ;;
-        Info) color_code="\033[1;32m" ;;
-        Warn) color_code="\033[1;33m" ;;
+        Debug) level_score=0 ;;
+        Info)  level_score=1 ;;
+        Warn)  level_score=2 ;;
+        Error) level_score=3 ;;
+        *)     level_score=1 ;;
+    esac
+
+    if [ "$level_score" -lt "$LOG_LEVEL" ]; then
+        return 0
+    fi
+
+    timestamp="$(date +"%H:%M:%S")"
+
+    case "$level" in
+        Debug) color_code="\033[0;30m" ;;
+        Info)  color_code="\033[0;36m" ;;
+        Warn)  color_code="\033[1;33m" ;;
         Error) color_code="\033[1;31m" ;;
-        *)
-            level="Unknown"
-            color_code="\033[0m"
-            ;;
+        *)     color_code="\033[0m" ;;
     esac
 
     if [ -t 1 ]; then
-        printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m"
+        printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
     else
-        printf "%s\n" "${timestamp} [${level}]: ${message}"
+        printf "%s\n" "${timestamp} [${level}]: ${message}" >&2
     fi
 }
 
@@ -110,119 +122,119 @@ load_config() {
 
     # Dry-run mode (disabled by default)
     DRY_RUN="${DRY_RUN:-$DEFAULT_DRY_RUN}"
-    log Info "DRY_RUN: $DRY_RUN"
+    log Debug "DRY_RUN: $DRY_RUN"
 
     # Proxy core configuration
     CORE_USER_GROUP="${CORE_USER_GROUP:-$DEFAULT_CORE_USER_GROUP}"
-    log Info "CORE_USER_GROUP: $CORE_USER_GROUP"
+    log Debug "CORE_USER_GROUP: $CORE_USER_GROUP"
 
     ROUTING_MARK="${ROUTING_MARK:-$DEFAULT_ROUTING_MARK}"
-    log Info "ROUTING_MARK: $ROUTING_MARK"
+    log Debug "ROUTING_MARK: $ROUTING_MARK"
 
     PROXY_TCP_PORT="${PROXY_TCP_PORT:-$DEFAULT_PROXY_TCP_PORT}"
-    log Info "PROXY_TCP_PORT: $PROXY_TCP_PORT"
+    log Debug "PROXY_TCP_PORT: $PROXY_TCP_PORT"
 
     PROXY_UDP_PORT="${PROXY_UDP_PORT:-$DEFAULT_PROXY_UDP_PORT}"
-    log Info "PROXY_UDP_PORT: $PROXY_UDP_PORT"
+    log Debug "PROXY_UDP_PORT: $PROXY_UDP_PORT"
 
     # Proxy mode: 0=auto, 1=force TPROXY, 2=force REDIRECT
     PROXY_MODE="${PROXY_MODE:-$DEFAULT_PROXY_MODE}"
-    log Info "PROXY_MODE: $PROXY_MODE"
+    log Debug "PROXY_MODE: $PROXY_MODE"
 
     # DNS configuration
     DNS_HIJACK_ENABLE="${DNS_HIJACK_ENABLE:-$DEFAULT_DNS_HIJACK_ENABLE}"
-    log Info "DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
+    log Debug "DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
 
     DNS_PORT="${DNS_PORT:-$DEFAULT_DNS_PORT}"
-    log Info "DNS_PORT: $DNS_PORT"
+    log Debug "DNS_PORT: $DNS_PORT"
 
     # Interface definitions
     MOBILE_INTERFACE="${MOBILE_INTERFACE:-$DEFAULT_MOBILE_INTERFACE}"
-    log Info "MOBILE_INTERFACE: $MOBILE_INTERFACE"
+    log Debug "MOBILE_INTERFACE: $MOBILE_INTERFACE"
 
     WIFI_INTERFACE="${WIFI_INTERFACE:-$DEFAULT_WIFI_INTERFACE}"
-    log Info "WIFI_INTERFACE: $WIFI_INTERFACE"
+    log Debug "WIFI_INTERFACE: $WIFI_INTERFACE"
 
     HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-$DEFAULT_HOTSPOT_INTERFACE}"
-    log Info "HOTSPOT_INTERFACE: $HOTSPOT_INTERFACE"
+    log Debug "HOTSPOT_INTERFACE: $HOTSPOT_INTERFACE"
 
     USB_INTERFACE="${USB_INTERFACE:-$DEFAULT_USB_INTERFACE}"
-    log Info "USB_INTERFACE: $USB_INTERFACE"
+    log Debug "USB_INTERFACE: $USB_INTERFACE"
 
     # Proxy switches
     PROXY_MOBILE="${PROXY_MOBILE:-$DEFAULT_PROXY_MOBILE}"
-    log Info "PROXY_MOBILE: $PROXY_MOBILE"
+    log Debug "PROXY_MOBILE: $PROXY_MOBILE"
 
     PROXY_WIFI="${PROXY_WIFI:-$DEFAULT_PROXY_WIFI}"
-    log Info "PROXY_WIFI: $PROXY_WIFI"
+    log Debug "PROXY_WIFI: $PROXY_WIFI"
 
     PROXY_HOTSPOT="${PROXY_HOTSPOT:-$DEFAULT_PROXY_HOTSPOT}"
-    log Info "PROXY_HOTSPOT: $PROXY_HOTSPOT"
+    log Debug "PROXY_HOTSPOT: $PROXY_HOTSPOT"
 
     PROXY_USB="${PROXY_USB:-$DEFAULT_PROXY_USB}"
-    log Info "PROXY_USB: $PROXY_USB"
+    log Debug "PROXY_USB: $PROXY_USB"
 
     PROXY_TCP="${PROXY_TCP:-$DEFAULT_PROXY_TCP}"
-    log Info "PROXY_TCP: $PROXY_TCP"
+    log Debug "PROXY_TCP: $PROXY_TCP"
 
     PROXY_UDP="${PROXY_UDP:-$DEFAULT_PROXY_UDP}"
-    log Info "PROXY_UDP: $PROXY_UDP"
+    log Debug "PROXY_UDP: $PROXY_UDP"
 
     PROXY_IPV6="${PROXY_IPV6:-$DEFAULT_PROXY_IPV6}"
-    log Info "PROXY_IPV6: $PROXY_IPV6"
+    log Debug "PROXY_IPV6: $PROXY_IPV6"
 
     # Mark values
     MARK_VALUE="${MARK_VALUE:-$DEFAULT_MARK_VALUE}"
-    log Info "MARK_VALUE: $MARK_VALUE"
+    log Debug "MARK_VALUE: $MARK_VALUE"
 
     MARK_VALUE6="${MARK_VALUE6:-$DEFAULT_MARK_VALUE6}"
-    log Info "MARK_VALUE6: $MARK_VALUE6"
+    log Debug "MARK_VALUE6: $MARK_VALUE6"
 
     # Routing table ID
     TABLE_ID="${TABLE_ID:-$DEFAULT_TABLE_ID}"
-    log Info "TABLE_ID: $TABLE_ID"
+    log Debug "TABLE_ID: $TABLE_ID"
 
     # Per-app proxy
     APP_PROXY_ENABLE="${APP_PROXY_ENABLE:-$DEFAULT_APP_PROXY_ENABLE}"
-    log Info "APP_PROXY_ENABLE: $APP_PROXY_ENABLE"
+    log Debug "APP_PROXY_ENABLE: $APP_PROXY_ENABLE"
 
     PROXY_APPS_LIST="${PROXY_APPS_LIST:-$DEFAULT_PROXY_APPS_LIST}"
-    log Info "PROXY_APPS_LIST: $PROXY_APPS_LIST"
+    log Debug "PROXY_APPS_LIST: $PROXY_APPS_LIST"
 
     BYPASS_APPS_LIST="${BYPASS_APPS_LIST:-$DEFAULT_BYPASS_APPS_LIST}"
-    log Info "BYPASS_APPS_LIST: $BYPASS_APPS_LIST"
+    log Debug "BYPASS_APPS_LIST: $BYPASS_APPS_LIST"
 
     APP_PROXY_MODE="${APP_PROXY_MODE:-$DEFAULT_APP_PROXY_MODE}"
-    log Info "APP_PROXY_MODE: $APP_PROXY_MODE"
+    log Debug "APP_PROXY_MODE: $APP_PROXY_MODE"
 
     # CN IP bypass
     BYPASS_CN_IP="${BYPASS_CN_IP:-$DEFAULT_BYPASS_CN_IP}"
-    log Info "BYPASS_CN_IP: $BYPASS_CN_IP"
+    log Debug "BYPASS_CN_IP: $BYPASS_CN_IP"
 
     CN_IP_FILE="${CN_IP_FILE:-$DEFAULT_CN_IP_FILE}"
-    log Info "CN_IP_FILE: $CN_IP_FILE"
+    log Debug "CN_IP_FILE: $CN_IP_FILE"
 
     CN_IPV6_FILE="${CN_IPV6_FILE:-$DEFAULT_CN_IPV6_FILE}"
-    log Info "CN_IPV6_FILE: $CN_IPV6_FILE"
+    log Debug "CN_IPV6_FILE: $CN_IPV6_FILE"
 
     CN_IP_URL="${CN_IP_URL:-$DEFAULT_CN_IP_URL}"
-    log Info "CN_IP_URL: $CN_IP_URL"
+    log Debug "CN_IP_URL: $CN_IP_URL"
 
     CN_IPV6_URL="${CN_IPV6_URL:-$DEFAULT_CN_IPV6_URL}"
-    log Info "CN_IPV6_URL: $CN_IPV6_URL"
+    log Debug "CN_IPV6_URL: $CN_IPV6_URL"
 
     # MAC address filtering
     MAC_FILTER_ENABLE="${MAC_FILTER_ENABLE:-$DEFAULT_MAC_FILTER_ENABLE}"
-    log Info "MAC_FILTER_ENABLE: $MAC_FILTER_ENABLE"
+    log Debug "MAC_FILTER_ENABLE: $MAC_FILTER_ENABLE"
 
     PROXY_MACS_LIST="${PROXY_MACS_LIST:-$DEFAULT_PROXY_MACS_LIST}"
-    log Info "PROXY_MACS_LIST: $PROXY_MACS_LIST"
+    log Debug "PROXY_MACS_LIST: $PROXY_MACS_LIST"
 
     BYPASS_MACS_LIST="${BYPASS_MACS_LIST:-$DEFAULT_BYPASS_MACS_LIST}"
-    log Info "BYPASS_MACS_LIST: $BYPASS_MACS_LIST"
+    log Debug "BYPASS_MACS_LIST: $BYPASS_MACS_LIST"
 
     MAC_PROXY_MODE="${MAC_PROXY_MODE:-$DEFAULT_MAC_PROXY_MODE}"
-    log Info "MAC_PROXY_MODE: $MAC_PROXY_MODE"
+    log Debug "MAC_PROXY_MODE: $MAC_PROXY_MODE"
 
     log Info "Configuration loading completed"
 }
@@ -1303,16 +1315,6 @@ stop_proxy() {
     log Info "Proxy stopped"
 }
 
-show_usage() {
-    cat << EOF
-Usage: $(basename "$0") {start|stop|restart} [--dry-run]
-
-Options:
-  --dry-run    Run without making actual changes
-  -h, --help   Show this help message
-EOF
-}
-
 parse_args() {
     MAIN_CMD=""
 
@@ -1328,13 +1330,8 @@ parse_args() {
             --dry-run)
                 DRY_RUN=1
                 ;;
-            -h|--help)
-                show_usage
-                exit 0
-                ;;
             *)
-                log Error "Invalid argument: $1"
-                show_usage
+                log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
                 exit 1
                 ;;
         esac
@@ -1342,25 +1339,20 @@ parse_args() {
     done
 
     if [ -z "$MAIN_CMD" ]; then
-        log Error "No command specified"
-        show_usage
+        log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
         exit 1
     fi
 }
 
 main() {
-    load_config
     if ! validate_config; then
         log Error "Configuration validation failed"
         exit 1
     fi
 
-    check_root
-    check_dependencies
-
     detect_proxy_mode
 
-    case "$MAIN_CMD" in
+    case "$1" in
         start)
             start_proxy
             ;;
@@ -1375,13 +1367,18 @@ main() {
             log Info "Proxy restarted"
             ;;
         *)
-            log Error "Invalid command: $MAIN_CMD"
-            show_usage
+            log Error "Usage: %s {start|stop|restart} [--dry-run]\n" "$(basename "$0")"
             exit 1
             ;;
     esac
 }
 
+check_root
+
+check_dependencies
+
+load_config
+
 parse_args "$@"
 
-main
+main "$MAIN_CMD"
