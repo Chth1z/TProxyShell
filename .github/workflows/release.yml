@@ -1,0 +1,93 @@
+name: Build and Release Module
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download latest sing-box (Pre-release/Beta)
+        run: |
+          # 1. 创建 bin 目录（如果不存在）
+          mkdir -p bin
+
+          # 2. 获取最新版本（包含 Pre-release）的下载链接
+          # 这里会自动查找包含 "linux-arm64" 且以 ".tar.gz" 结尾的资源
+          echo "Fetching latest sing-box release info..."
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases | jq -r '.[0].assets[] | select(.name | contains("linux-arm64") and endswith(".tar.gz")) | .browser_download_url')
+          
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "Error: Could not find download URL for linux-arm64."
+            exit 1
+          fi
+
+          echo "Downloading from: $DOWNLOAD_URL"
+          wget -q -O sing-box.tar.gz "$DOWNLOAD_URL"
+
+          # 3. 解压并提取 sing-box 二进制文件
+          echo "Extracting..."
+          tar -xzf sing-box.tar.gz
+          
+          # 找到解压出的 sing-box 文件（通常在子文件夹内）并移动到 bin/
+          find . -maxdepth 2 -type f -name "sing-box" -exec mv {} bin/ \;
+          
+          # 4. 赋予执行权限
+          chmod +x bin/sing-box
+          
+          # 5. 清理临时文件
+          rm -rf sing-box.tar.gz sing-box-*
+          
+          echo "sing-box binary downloaded to bin/ successfully."
+          ls -l bin/sing-box
+
+      - name: Get version from module.prop
+        id: version
+        run: |
+          if [ -f "module.prop" ]; then
+            VERSION=$(grep "^version=" module.prop | cut -d'=' -f2)
+            echo "VERSION=$VERSION" >> $GITHUB_ENV
+            echo "Detect version: $VERSION"
+          else
+            echo "module.prop not found!"
+            exit 1
+          fi
+
+      - name: Zip module
+        run: |
+          ZIP_NAME="TProxyShell-${{ env.VERSION }}.zip"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          
+          # 打包时会自动包含刚才下载到 bin/ 的 sing-box
+          # 排除 git 相关文件和临时文件
+          zip -r "$ZIP_NAME" . -x ".git/*" ".github/*" ".gitignore" "README.md" "LICENSE" "*.zip" "bin/readme.md"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ env.ZIP_NAME }}
+          body: |
+            Automatic release for version ${{ env.VERSION }}.
+            Includes latest sing-box binary.
+            
+            Hash (SHA256):
+            `$(sha256sum ${{ env.ZIP_NAME }} | cut -d' ' -f1)`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Artifact (For manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
