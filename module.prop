@@ -1,0 +1,6 @@
+id=SingBox_TProxy
+name=TPShell
+version=v1.3
+versionCode=100
+author=Chth1z
+description=Transparent proxy module based on Sing-box and Shell.
