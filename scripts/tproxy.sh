@@ -48,11 +48,11 @@ readonly DEFAULT_TABLE_ID=2025
 
 # Per-app proxy (use space to separate package names, supports user:package format)
 readonly DEFAULT_APP_PROXY_ENABLE=1
-readonly DEFAULT_PROXY_APPS_LIST="0:com.android.shell 0:com.android.vending 0:com.google.android.gms 0:com.google.android.googlequicksearchbox 0:com.osp.app.signin 0:com.sec.android.app.myfiles 0:com.ichi2.anki 0:com.perol.pixez 0:com.reddit.frontpage 0:com.samsung.android.email.provider 0:com.sec.android.app.sbrowser 0:com.twitter.android 0:me.weishu.kernelsu 0:org.telegram.messenger 0:proton.android.authenticator"
+readonly DEFAULT_PROXY_APPS_LIST=""
 # Example: "com.example.app com.other"
 readonly DEFAULT_BYPASS_APPS_LIST=""
 # Example: "com.android.shell"
-readonly DEFAULT_APP_PROXY_MODE="whitelist"
+readonly DEFAULT_APP_PROXY_MODE="blacklist"
 # "blacklist" or "whitelist"
 
 # CN IP bypass configuration
@@ -1315,6 +1315,16 @@ stop_proxy() {
     log Info "Proxy stopped"
 }
 
+show_usage() {
+    cat << EOF
+Usage: $(basename "$0") {start|stop|restart} [--dry-run]
+
+Options:
+  --dry-run    Run without making actual changes
+  -h, --help   Show this help message
+EOF
+}
+
 parse_args() {
     MAIN_CMD=""
 
@@ -1330,8 +1340,13 @@ parse_args() {
             --dry-run)
                 DRY_RUN=1
                 ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
             *)
-                log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+                log Error "Invalid argument: $1"
+                show_usage
                 exit 1
                 ;;
         esac
@@ -1339,20 +1354,25 @@ parse_args() {
     done
 
     if [ -z "$MAIN_CMD" ]; then
-        log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+        log Error "No command specified"
+        show_usage
         exit 1
     fi
 }
 
 main() {
+    load_config
     if ! validate_config; then
         log Error "Configuration validation failed"
         exit 1
     fi
 
+    check_root
+    check_dependencies
+
     detect_proxy_mode
 
-    case "$1" in
+    case "$MAIN_CMD" in
         start)
             start_proxy
             ;;
@@ -1367,18 +1387,13 @@ main() {
             log Info "Proxy restarted"
             ;;
         *)
-            log Error "Usage: %s {start|stop|restart} [--dry-run]\n" "$(basename "$0")"
+            log Error "Invalid command: $MAIN_CMD"
+            show_usage
             exit 1
             ;;
     esac
 }
 
-check_root
-
-check_dependencies
-
-load_config
-
 parse_args "$@"
 
-main "$MAIN_CMD"
+main
