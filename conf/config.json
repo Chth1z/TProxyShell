@@ -1,7 +1,7 @@
 {
   "log": {
     "level": "error",
-    "timestamp": true，
+    "timestamp": true,
     "output": "./sing-box.log"
   },
   "dns": {
