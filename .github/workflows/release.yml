@@ -56,26 +56,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}          # 排除 git 相关文件和临时文件
-          zip -r "$ZIP_NAME" . -x ".git/*" ".github/*" ".gitignore" "README.md" "LICENSE" "*.zip" "bin/readme.md"
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: ${{ env.ZIP_NAME }}
-          body: |
-            Automatic release for version ${{ env.VERSION }}.
-            Includes latest sing-box binary.
-            
-            Hash (SHA256):
-            `$(sha256sum ${{ env.ZIP_NAME }} | cut -d' ' -f1)`
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Artifact (For manual runs)
-        if: "!startsWith(github.ref, 'refs/tags/')"
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
