@@ -1,9 +1,9 @@
 #!/system/bin/sh
 
 BOX_DIR="/data/adb/box"
-MAGISK_MOD_DIR="/data/adb/modules/SingBox_TProxy"
-if [ -d "/data/adb/modules_update/SingBox_TProxy" ]; then
-    MAGISK_MOD_DIR="/data/adb/modules_update/SingBox_TProxy"
+MAGISK_MOD_DIR="/data/adb/modules/TProxyShell"
+if [ -d "/data/adb/modules_update/TProxyShell" ]; then
+    MAGISK_MOD_DIR="/data/adb/modules_update/TProxyShell"
 fi
 
 BIN_DIR="$BOX_DIR/bin"
