@@ -1,85 +1,59 @@
 #!/system/bin/sh
 
-# Configuration (modify as needed)
+_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+if [ -f "${_SCRIPT_DIR}/../settings.ini" ]; then
+    readonly USER_CONFIG_FILE="${_SCRIPT_DIR}/../settings.ini"
+elif [ -f "${_SCRIPT_DIR}/settings.ini" ]; then
+    readonly USER_CONFIG_FILE="${_SCRIPT_DIR}/settings.ini"
+else
+    readonly USER_CONFIG_FILE="/data/adb/box/settings.ini"
+fi
 
-# Proxy core configuration
-# Proxy running user and group
 readonly DEFAULT_CORE_USER_GROUP="root:net_admin"
-# Proxy traffic mark
-readonly DEFAULT_ROUTING_MARK="2025"
-# Proxy ports (transparent proxy listening ports)
+readonly DEFAULT_ROUTING_MARK=""
 readonly DEFAULT_PROXY_TCP_PORT="1536"
 readonly DEFAULT_PROXY_UDP_PORT="1536"
-
-# Proxy mode: 0=auto (check TPROXY support), 1=force TPROXY, 2=force REDIRECT
 readonly DEFAULT_PROXY_MODE=0
 
-# DNS configuration
-# DNS hijack method (0: disabled, 1: tproxy, 2: redirect)
 readonly DEFAULT_DNS_HIJACK_ENABLE=1
-# DNS listening port
 readonly DEFAULT_DNS_PORT="1053"
 
-# Interface definitions
-# Mobile data interface
 readonly DEFAULT_MOBILE_INTERFACE="rmnet_data+"
-# WiFi interface
 readonly DEFAULT_WIFI_INTERFACE="wlan0"
-# Hotspot interface
 readonly DEFAULT_HOTSPOT_INTERFACE="wlan2"
-# USB tethering interface
 readonly DEFAULT_USB_INTERFACE="rndis+"
 
-# Proxy switches
 readonly DEFAULT_PROXY_MOBILE=1
 readonly DEFAULT_PROXY_WIFI=1
-readonly DEFAULT_PROXY_HOTSPOT=1
-readonly DEFAULT_PROXY_USB=1
+readonly DEFAULT_PROXY_HOTSPOT=0
+readonly DEFAULT_PROXY_USB=0
 readonly DEFAULT_PROXY_TCP=1
 readonly DEFAULT_PROXY_UDP=1
-readonly DEFAULT_PROXY_IPV6=1
+readonly DEFAULT_PROXY_IPV6=0
 
-# Mark values
 readonly DEFAULT_MARK_VALUE=20
 readonly DEFAULT_MARK_VALUE6=25
-
-# Routing table ID
 readonly DEFAULT_TABLE_ID=2025
 
-# Per-app proxy (use space to separate package names, supports user:package format)
-readonly DEFAULT_APP_PROXY_ENABLE=1
+readonly DEFAULT_APP_PROXY_ENABLE=0
 readonly DEFAULT_PROXY_APPS_LIST=""
-# Example: "com.example.app com.other"
 readonly DEFAULT_BYPASS_APPS_LIST=""
-# Example: "com.android.shell"
 readonly DEFAULT_APP_PROXY_MODE="blacklist"
-# "blacklist" or "whitelist"
 
-# CN IP bypass configuration
 readonly DEFAULT_BYPASS_CN_IP=0
-# CN IP list file paths
 _SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-readonly DEFAULT_SCRIPT_DIR="$_SCRIPT_DIR"
-readonly DEFAULT_CN_IP_FILE="${DEFAULT_SCRIPT_DIR}/cn.zone"
-readonly DEFAULT_CN_IPV6_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
-# CN IP source URLs
+readonly CN_IP_FILE="${_SCRIPT_DIR}/cn.zone"
+readonly CN_IPV6_FILE="${_SCRIPT_DIR}/cn_ipv6.zone"
 readonly DEFAULT_CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
 readonly DEFAULT_CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
 
-# MAC address blacklist/whitelist configuration (hotspot mode)
 readonly DEFAULT_MAC_FILTER_ENABLE=0
-# MAC address blacklist/whitelist (use space to separate MAC addresses)
 readonly DEFAULT_PROXY_MACS_LIST=""
-# Example: "AA:BB:CC:DD:EE:FF 11:22:33:44:55:66"
 readonly DEFAULT_BYPASS_MACS_LIST=""
-# Example: "FF:EE:DD:CC:BB:AA"
 readonly DEFAULT_MAC_PROXY_MODE="blacklist"
-# "blacklist" or "whitelist"
 
-# Dry-run mode (disabled by default)
 readonly DEFAULT_DRY_RUN=0
-
-readonly LOG_LEVEL=1
+readonly DEFAULT_LOG_LEVEL=1
 
 log() {
     local level="$1"
@@ -87,6 +61,7 @@ log() {
     local timestamp
     local color_code
     local level_score=0
+    local current_log_level="${LOG_LEVEL:-$DEFAULT_LOG_LEVEL}"
 
     case "$level" in
         Debug) level_score=0 ;;
@@ -96,21 +71,19 @@ log() {
         *)     level_score=1 ;;
     esac
 
-    if [ "$level_score" -lt "$LOG_LEVEL" ]; then
+    if [ "$level_score" -lt "$current_log_level" ]; then
         return 0
     fi
 
     timestamp="$(date +"%H:%M:%S")"
-
-    case "$level" in
-        Debug) color_code="\033[0;30m" ;;
-        Info)  color_code="\033[0;36m" ;;
-        Warn)  color_code="\033[1;33m" ;;
-        Error) color_code="\033[1;31m" ;;
-        *)     color_code="\033[0m" ;;
-    esac
-
     if [ -t 1 ]; then
+        case "$level" in
+            Debug) color_code="\033[0;30m" ;;
+            Info)  color_code="\033[0;36m" ;;
+            Warn)  color_code="\033[1;33m" ;;
+            Error) color_code="\033[1;31m" ;;
+            *)     color_code="\033[0m" ;;
+        esac
         printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
     else
         printf "%s\n" "${timestamp} [${level}]: ${message}" >&2
@@ -118,8 +91,19 @@ log() {
 }
 
 load_config() {
-    log Info "Loading configuration from environment or defaults..."
+    log Info "Initializing configuration..."
 
+    if [ -f "$USER_CONFIG_FILE" ]; then
+        log Info "Loading settings from: $USER_CONFIG_FILE"
+        export SCRIPT_DIR="$_SCRIPT_DIR"
+        
+        set -a
+        source "$USER_CONFIG_FILE"
+        set +a
+    else
+        log Warn "Settings file not found at $USER_CONFIG_FILE. Using internal defaults."
+    fi
+    
     # Dry-run mode (disabled by default)
     DRY_RUN="${DRY_RUN:-$DEFAULT_DRY_RUN}"
     log Debug "DRY_RUN: $DRY_RUN"
