@@ -1,154 +1,139 @@
 #!/system/bin/sh
+
 SKIPUNZIP=1
+BOX_DIR="/data/adb/box"
+CONF_DIR="$BOX_DIR/conf"
+BIN_DIR="$BOX_DIR/bin"
+SCRIPTS_DIR="$BOX_DIR/scripts"
+RUN_DIR="$BOX_DIR/run"
 
-BOX_PATH="/data/adb/box"
-MOD_CONFIG="$BOX_PATH/conf/config.json"
-MOD_SETTINGS="$BOX_PATH/settings.ini"
+TMP_BACKUP="/data/local/tmp/box_backup_$(date +%s)"
 
-TMP_DIR="$BOX_PATH/tmp_install"
+ui_print() { echo "$1"; }
 
-print_line() { ui_print "***************************************"; }
-print_title() { 
-  print_line
-  ui_print "      TProxyShell      "
-  print_line
+choose_action() {
+  local title="$1"
+  local default_action="$2" # true=Keep, false=Reset
+  local wait_time=10
+  
+  ui_print " "
+  ui_print "*******************************************"
+  ui_print " $title"
+  ui_print "*******************************************"
+  ui_print "  [ Vol + ] : Yes / Keep"
+  ui_print "  [ Vol - ] : No / Reset"
+  ui_print " "
+  ui_print "  > Waiting for input ($wait_time s)..."
+
+  while read -r dummy; do :; done < /dev/input/event0 2>/dev/null &
+  kill $! 2>/dev/null
+
+  local start_time=$(date +%s)
+
+  while true; do
+    local current_time=$(date +%s)
+    local elapsed=$((current_time - start_time))
+    
+    if [ $elapsed -ge $wait_time ]; then
+        if [ "$default_action" = "true" ]; then
+            ui_print "  > Timeout. Default: [Keep Config]"
+            return 0
+        else
+            ui_print "  > Timeout. Default: [Reset Config]"
+            return 1
+        fi
+    fi
+
+    key_event=$(timeout 0.1 getevent -lc 1 2>&1)
+
+    if echo "$key_event" | grep -q "KEY_VOLUMEUP"; then
+        ui_print "  > Selected: [Keep Config]"
+        return 0
+    elif echo "$key_event" | grep -q "KEY_VOLUMEDOWN"; then
+        ui_print "  > Selected: [Reset Config]"
+        return 1
+    fi
+  done
 }
 
-keytest() {
-  ui_print "- Press Vol Key: "
-  ui_print "   [Vol Up]   : $1"
-  ui_print "   [Vol Down] : $2"
-  
-  local loop=0
-  local key_result=""
-  
-  while true; do
-      if getevent -c 1 2>&1 | grep -q "00"; then continue; else break; fi
-  done
-
-  while true; do
-
-    getevent -l -c 1 2>&1 > /data/local/tmp/keycheck
-    
-    if grep -q "KEY_VOLUMEUP" /data/local/tmp/keycheck || grep -q "0073" /data/local/tmp/keycheck; then
-      key_result="UP"
-      break
-    elif grep -q "KEY_VOLUMEDOWN" /data/local/tmp/keycheck || grep -q "0072" /data/local/tmp/keycheck; then
-      key_result="DOWN"
-      break
-    fi
-    
-    loop=$((loop + 1))
-    if [ $loop -gt 100 ]; then
-       break
-    fi
-  done
-  
-  rm -f /data/local/tmp/keycheck
-  
-  if [ "$key_result" = "UP" ]; then
-    return 0
-  else
-    return 1
-  fi
-}
-
-print_title
-
-ui_print "- Initializing installation..."
-
-ui_print "- Updating Core binaries & Scripts..."
-mkdir -p "$BOX_PATH/bin"
-mkdir -p "$BOX_PATH/scripts"
-mkdir -p "$BOX_PATH/conf"
-
-unzip -o "$ZIPFILE" "bin/*" -d "$BOX_PATH" >&2
-unzip -o "$ZIPFILE" "scripts/*" -d "$BOX_PATH" >&2
+ui_print "- Starting TProxyShell installation..."
 
 ui_print "- Extracting module files..."
-unzip -o "$ZIPFILE" "module.prop" "service.sh" "action.sh" "webroot/*" -d "$MODPATH" >&2
-unzip -o "$ZIPFILE" "conf/*" -d "$TMP_DIR" >&2
+unzip -o "$ZIPFILE" -x 'META-INF/*' -x 'box/*' -d "$MODPATH" >&2
 
-KEEP_CONFIG=0
-
-if [ -f "$MOD_CONFIG" ] || [ -f "$MOD_SETTINGS" ]; then
-  ui_print " "
-  ui_print "Detected existing configuration!"
-  
-  if keytest "Preserve current config (Recommended)" "Reset to default"; then
-    KEEP_CONFIG=1
-    ui_print "Action: KEEP User Config"
-  else
-    KEEP_CONFIG=0
-    ui_print "Action: RESET Config (Backup old)"
-  fi
-else
-  ui_print "- No existing config found. Installing default."
-fi
-
-mkdir -p "$TMP_DIR/conf"
-
-if [ "$KEEP_CONFIG" -eq 1 ]; then
-    
-    if [ -f "$MOD_CONFIG" ]; then
-        ui_print "- Preserving config.json..."
-        if [ -f "$TMP_DIR/conf/config.json" ]; then
-            cp -f "$TMP_DIR/conf/config.json" "$BOX_PATH/conf/config.json.example"
-        fi
-    else
-        if [ -f "$TMP_DIR/conf/config.json" ]; then
-            cp -f "$TMP_DIR/conf/config.json" "$MOD_CONFIG"
-        fi
-    fi
-
-    if [ -f "$MOD_SETTINGS" ]; then
-        ui_print "- Preserving settings.ini..."
-        if [ -f "$TMP_DIR/settings.ini" ]; then
-            cp -f "$TMP_DIR/settings.ini" "$BOX_PATH/settings.ini.example"
-        fi
-    else
-        if [ -f "$TMP_DIR/settings.ini" ]; then
-            cp -f "$TMP_DIR/settings.ini" "$MOD_SETTINGS"
-        fi
-    fi
-
-else
-    if [ -f "$MOD_CONFIG" ]; then
-        ui_print "- Backing up old config.json to .bak..."
-        cp -f "$MOD_CONFIG" "$MOD_CONFIG.bak"
-    fi
-    ui_print "- Installing default config.json..."
-    cp -f "$TMP_DIR/conf/config.json" "$MOD_CONFIG"
-
-    if [ -f "$MOD_SETTINGS" ]; then
-        ui_print "- Backing up old settings.ini to .bak..."
-        cp -f "$MOD_SETTINGS" "$MOD_SETTINGS.bak"
-    fi
-    
-    if [ -f "$TMP_DIR/settings.ini" ]; then
-        ui_print "- Installing default settings.ini..."
-        cp -f "$TMP_DIR/settings.ini" "$MOD_SETTINGS"
-    else
-        ui_print "Warning: settings.ini not found in ZIP!"
-    fi
-fi
-
-rm -rf "$TMP_DIR"
-
-ui_print "- Setting permissions..."
-set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/action.sh" 0 0 0755
 
-set_perm_recursive "$BOX_PATH" 0 0 0755 0644
-set_perm_recursive "$BOX_PATH/bin" 0 0 0755 0755
-set_perm_recursive "$BOX_PATH/scripts" 0 0 0755 0755
+KEEP_CONFIG=true
 
-if [ -f "$MOD_SETTINGS" ]; then
-    set_perm "$MOD_SETTINGS" 0 0 0644
+if [ -f "$CONF_DIR/settings.ini" ] || [ -f "$CONF_DIR/config.json" ]; then
+  ui_print "- Old configuration detected."
+  if choose_action "Keep existing configuration?" "true"; then
+    KEEP_CONFIG=true
+  else
+    KEEP_CONFIG=false
+  fi
+else
+  KEEP_CONFIG=false
 fi
 
-print_line
-ui_print "   Installation Successful!   "
-ui_print "   Reboot to apply changes.   "
-print_line
+if [ "$KEEP_CONFIG" = true ]; then
+  ui_print "- Backing up config to temporary storage..."
+  rm -rf "$TMP_BACKUP"
+  mkdir -p "$TMP_BACKUP"
+  
+  [ -f "$CONF_DIR/settings.ini" ] && cp -f "$CONF_DIR/settings.ini" "$TMP_BACKUP/"
+  [ -f "$CONF_DIR/config.json" ] && cp -f "$CONF_DIR/config.json" "$TMP_BACKUP/"
+
+  if [ ! -f "$TMP_BACKUP/settings.ini" ] && [ ! -f "$TMP_BACKUP/config.json" ]; then
+    ui_print "  ! Warning: Backup failed or no files found. Using default config."
+    KEEP_CONFIG=false
+  fi
+fi
+
+ui_print "- Cleaning up old version..."
+rm -rf "$SCRIPTS_DIR"
+if [ "$KEEP_CONFIG" = false ]; then
+    rm -rf "$CONF_DIR"
+fi
+
+mkdir -p "$BOX_DIR"
+mkdir -p "$CONF_DIR"
+mkdir -p "$RUN_DIR"
+
+ui_print "- Deploying core files to /data/adb/box ..."
+unzip -o "$ZIPFILE" "box/*" -d "/data/adb/" >&2
+
+if [ "$KEEP_CONFIG" = true ]; then
+  ui_print "- Restoring user configuration..."
+  if [ -f "$TMP_BACKUP/settings.ini" ]; then
+    cp -f "$TMP_BACKUP/settings.ini" "$CONF_DIR/"
+    ui_print "  > settings.ini restored."
+  fi
+  if [ -f "$TMP_BACKUP/config.json" ]; then
+    cp -f "$TMP_BACKUP/config.json" "$CONF_DIR/"
+    ui_print "  > config.json restored."
+  fi
+  rm -rf "$TMP_BACKUP"
+else
+  ui_print "- Default configuration applied."
+fi
+
+ui_print "- Setting file permissions..."
+
+set_perm_recursive "$BOX_DIR" 0 0 0755 0644
+set_perm_recursive "$SCRIPTS_DIR" 0 0 0755 0755
+set_perm_recursive "$BIN_DIR" 0 0 0755 0755
+set_perm_recursive "$CONF_DIR" 0 0 0755 0644
+set_perm_recursive "$RUN_DIR" 0 0 0755 0777
+
+if [ -f "$BIN_DIR/sing-box" ]; then
+    set_perm "$BIN_DIR/sing-box" 0 0 0755
+fi
+
+if [ -f "$SCRIPTS_DIR/tproxy.sh" ]; then
+    set_perm "$SCRIPTS_DIR/tproxy.sh" 0 0 0755
+fi
+
+ui_print "- Installation successful!"
+ui_print "- Recommendation: Reboot your device."
