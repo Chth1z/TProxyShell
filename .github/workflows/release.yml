@@ -78,7 +78,7 @@ jobs:
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           
           # 打包所有文件 (此时 bin/sing-box 已经存在，会被一起打包)
-          zip -r "$ZIP_NAME" . -x ".git/*" ".github/*" ".gitignore" "README.md" "LICENSE" "*.zip"
+          zip -r "$ZIP_NAME" . -x ".git/*" ".github/*" ".gitignore" "README.md" "LICENSE" "*.zip" "bin/readme.md"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
