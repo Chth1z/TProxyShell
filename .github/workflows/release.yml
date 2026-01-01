@@ -4,7 +4,7 @@ on:
   workflow_dispatch: # 允许手动触发
   push:
     tags:
-      - 'v*' # 当推送 v 开头的 tag 时触发，例如 v1.0
+      - 'v*' # 当推送 v 开头的 tag 时触发
 
 jobs:
   build:
@@ -29,13 +29,49 @@ jobs:
             exit 1
           fi
 
+      # --- 新增步骤：自动下载 sing-box (Pre-release) ---
+      - name: Download sing-box (Pre-release)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching latest pre-release tag..."
+          # 使用 API 获取最新的 pre-release 标签
+          PRE_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases | jq -r 'map(select(.prerelease)) | .[0].tag_name')
+          echo "Detected Tag: $PRE_TAG"
+          
+          echo "Downloading sing-box binary for linux-arm64..."
+          # 使用 gh 命令行工具下载特定文件
+          gh release download "$PRE_TAG" \
+            --repo SagerNet/sing-box \
+            --pattern "*linux-arm64.tar.gz" \
+            --output sing-box.tar.gz \
+            --clobber
+          
+          # 准备 bin 目录
+          mkdir -p bin
+          
+          # 解压并提取二进制文件
+          tar -xzf sing-box.tar.gz
+          # 查找解压文件夹内的 sing-box 文件并移动到 bin 目录
+          find . -name "sing-box" -type f -exec mv {} bin/ \;
+          
+          # 清理临时文件
+          rm sing-box.tar.gz
+          rm -rf sing-box-*-linux-arm64
+          
+          # 赋予执行权限
+          chmod +x bin/sing-box
+          
+          echo "sing-box binary installed to bin/:"
+          ls -l bin/sing-box
+
       - name: Zip module
         run: |
-          # 定义文件名，例如 TProxyShell-v1.0.zip
+          # 定义文件名
           ZIP_NAME="TProxyShell-${{ env.VERSION }}.zip"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           
-          # 打包所有文件，排除 .git, .github 目录和 README 等无关文件
+          # 打包所有文件 (此时 bin/sing-box 已经存在，会被一起打包)
           zip -r "$ZIP_NAME" . -x ".git/*" ".github/*" ".gitignore" "README.md" "LICENSE" "*.zip"
 
       - name: Create Release
@@ -43,11 +79,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ env.ZIP_NAME }}
-          body: |
-            Automatic release for version ${{ env.VERSION }}.
-            
-            Hash (SHA256):
-            `$(sha256sum ${{ env.ZIP_NAME }} | cut -d' ' -f1)`
+          # 已删除 body 部分，不再自动生成简介
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
