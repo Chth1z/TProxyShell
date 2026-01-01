@@ -1,12 +1,10 @@
 #!/system/bin/sh
 
 _SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-if [ -f "${_SCRIPT_DIR}/../settings.ini" ]; then
-    readonly USER_CONFIG_FILE="${_SCRIPT_DIR}/../settings.ini"
-elif [ -f "${_SCRIPT_DIR}/settings.ini" ]; then
+if [ -f "${_SCRIPT_DIR}/settings.ini" ]; then
     readonly USER_CONFIG_FILE="${_SCRIPT_DIR}/settings.ini"
 else
-    readonly USER_CONFIG_FILE="/data/adb/box/settings.ini"
+    readonly USER_CONFIG_FILE="/data/adb/box/conf/settings.ini"
 fi
 
 readonly DEFAULT_CORE_USER_GROUP="root:net_admin"
@@ -41,9 +39,9 @@ readonly DEFAULT_BYPASS_APPS_LIST=""
 readonly DEFAULT_APP_PROXY_MODE="blacklist"
 
 readonly DEFAULT_BYPASS_CN_IP=0
-_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-readonly CN_IP_FILE="${_SCRIPT_DIR}/cn.zone"
-readonly CN_IPV6_FILE="${_SCRIPT_DIR}/cn_ipv6.zone"
+readonly DEFAULT_SCRIPT_DIR="$_SCRIPT_DIR"
+readonly DEFAULT_CN_IP_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
+readonly DEFAULT_CN_IPV6_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
 readonly DEFAULT_CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
 readonly DEFAULT_CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
 

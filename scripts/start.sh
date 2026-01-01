@@ -1,43 +1,98 @@
 #!/system/bin/sh
 
 BOX_DIR="/data/adb/box"
+BIN_DIR="$BOX_DIR/bin"
+CONF_DIR="$BOX_DIR/conf"
+SCRIPTS_DIR="$BOX_DIR/scripts"
+RUN_DIR="$BOX_DIR/run"
+
+PID_FILE="$RUN_DIR/sing-box.pid"
+LOG_FILE="$RUN_DIR/box.log"
+
 MAGISK_MOD_DIR="/data/adb/modules/TProxyShell"
 if [ -d "/data/adb/modules_update/TProxyShell" ]; then
     MAGISK_MOD_DIR="/data/adb/modules_update/TProxyShell"
 fi
-
-BIN_DIR="$BOX_DIR/bin"
-CONF_DIR="$BOX_DIR/conf"
-SCRIPTS_DIR="$BOX_DIR/scripts"
-PID_FILE="$BOX_DIR/singbox.pid"
-LOG_FILE="$BOX_DIR/box.log"
 PROP_FILE="$MAGISK_MOD_DIR/module.prop"
 
 export PATH="$BIN_DIR:/data/adb/magisk:/data/adb/ksu/bin:$PATH"
-
-TEE_CMD="tee"
-if ! command -v tee >/dev/null 2>&1; then
-    TEE_CMD="busybox tee"
-fi
+export BOX_DIR BIN_DIR CONF_DIR SCRIPTS_DIR RUN_DIR
 
 log() {
-    local msg="$(date +"%H:%M:%S") [Manager] $1"
-    echo "$msg" >> "$LOG_FILE"
+    local timestamp="$(date +"%H:%M:%S")"
+    local msg="$1"
+    if [ ! -d "$RUN_DIR" ]; then mkdir -p "$RUN_DIR"; fi
+    echo "${timestamp} [Manager] ${msg}" >> "$LOG_FILE"
     if [ "${INTERACTIVE:-0}" -eq 1 ]; then
-        echo "$msg"
+        echo "${timestamp} [Manager] ${msg}"
     fi
 }
 
 update_description() {
     local status="$1"
+    local detail="$2"
     local pid_info=""
+    
     [ -f "$PID_FILE" ] && pid_info=" (PID: $(cat "$PID_FILE"))"
     
-    if [ "$status" == "running" ]; then
-        sed -i "s/^description=.*/description=🥳 Running${pid_info}/g" "$PROP_FILE"
-    else
-        sed -i "s/^description=.*/description=😭 Stopped/g" "$PROP_FILE"
+    local desc_text=""
+    case "$status" in
+        running) desc_text="🥳 Running${pid_info}" ;;
+        error)   desc_text="❌ Error: ${detail}" ;;
+        *)       desc_text="💤 Stopped" ;;
+    esac
+
+    if [ -f "$PROP_FILE" ]; then
+        sed -i "s/^description=.*/description=${desc_text}/g" "$PROP_FILE"
     fi
+}
+
+init_environment() {
+    if [ ! -d "$RUN_DIR" ]; then
+        mkdir -p "$RUN_DIR"
+        chmod 0755 "$RUN_DIR"
+    fi
+    
+    if [ -f "$LOG_FILE" ] && [ $(wc -c < "$LOG_FILE") -gt 1048576 ]; then
+        mv "$LOG_FILE" "${LOG_FILE}.bak"
+    fi
+    
+    chmod +x "$BIN_DIR/sing-box" 2>/dev/null
+    chmod +x "$SCRIPTS_DIR/"*.sh 2>/dev/null
+}
+
+check_resource_integrity() {
+    log "Checking resource integrity..."
+    
+    local required_files="$BIN_DIR/sing-box $CONF_DIR/config.json $CONF_DIR/settings.ini $SCRIPTS_DIR/tproxy.sh"
+    
+    for file in $required_files; do
+        if [ ! -f "$file" ]; then
+            local filename=$(basename "$file")
+            log "Critical file missing: $file"
+            update_description "error" "Missing $filename"
+            return 1
+        fi
+    done
+    
+    log "Integrity check passed."
+    return 0
+}
+
+check_config_validity() {
+    log "Verifying configuration logic..."
+    
+    local check_out
+    check_out=$("$BIN_DIR/sing-box" check -c "$CONF_DIR/config.json" -D "$RUN_DIR" 2>&1)
+    local ret=$?
+    
+    if [ $ret -ne 0 ]; then
+        log "Config check failed!"
+        log "Details: $check_out"
+        update_description "error" "Invalid Config"
+        return 1
+    fi
+    return 0
 }
 
 start_core() {
@@ -49,7 +104,9 @@ start_core() {
     ulimit -n 65536
     ulimit -l unlimited
 
-    nohup "$BIN_DIR/sing-box" run -c "$CONF_DIR/config.json" -D "$BIN_DIR" > /dev/null 2>&1 &
+    log "Starting sing-box core..."
+    
+    nohup "$BIN_DIR/sing-box" run -c "$CONF_DIR/config.json" -D "$RUN_DIR" > /dev/null 2>&1 &
     local pid=$!
     echo $pid > "$PID_FILE"
     
@@ -57,70 +114,82 @@ start_core() {
         echo -1000 > "/proc/$pid/oom_score_adj"
     fi
 
-    local retries=0
-    while [ $retries -lt 15 ]; do
-        if kill -0 $pid 2>/dev/null; then
-             if netstat -unlp 2>/dev/null | grep -q "$pid"; then
-                 log "Core started successfully."
-                 return 0
-             fi
-        else
-             log "Core process died unexpectedly."
-             rm "$PID_FILE"
-             return 1
-        fi
-        sleep 1
-        retries=$((retries + 1))
-    done
-    
-    log "Core started (Warning: Port check timed out, but PID exists)."
-    return 0
+    sleep 2
+    if kill -0 $pid 2>/dev/null; then
+        log "Core started successfully (PID: $pid)."
+        return 0
+    else
+        log "Core process died immediately."
+        rm -f "$PID_FILE"
+        return 1
+    fi
 }
 
 stop_core() {
     if [ -f "$PID_FILE" ]; then
-        kill $(cat "$PID_FILE") 2>/dev/null
-        rm "$PID_FILE"
+        local pid=$(cat "$PID_FILE")
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null
+            local wait_count=0
+            while kill -0 "$pid" 2>/dev/null && [ $wait_count -lt 10 ]; do
+                sleep 0.1
+                wait_count=$((wait_count + 1))
+            done
+            kill -9 "$pid" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
     fi
     killall sing-box 2>/dev/null
 }
 
 run_tproxy() {
     local action=$1
-    local cmd="sh $SCRIPTS_DIR/tproxy.sh $action"
+    log "Executing TProxy script: $action"
     
-    if [ "${INTERACTIVE:-0}" -eq 1 ]; then
-        $cmd 2>&1 | $TEE_CMD -a "$LOG_FILE"
+    sh "$SCRIPTS_DIR/tproxy.sh" "$action" >> "$LOG_FILE" 2>&1
+    local ret=$?
+    
+    if [ $ret -eq 0 ]; then
+        return 0
     else
-        $cmd >> "$LOG_FILE" 2>&1
+        log "TProxy script failed (exit code: $ret)"
+        return 1
     fi
 }
 
 do_start() {
-    log "Starting service..."
-    
-    sh "$SCRIPTS_DIR/tproxy.sh" stop >> "$LOG_FILE" 2>&1
+    log ">>> Starting Service <<<"
+    init_environment
+
+    if ! check_resource_integrity; then
+        exit 1
+    fi
+
+    run_tproxy "stop" >/dev/null 2>&1
     stop_core
     
-    if start_core; then
-        log "Core is up. Applying iptables..."
-        
-        run_tproxy "start"
-        if [ $? -eq 0 ]; then
-            update_description "running"
-            log "Service started successfully."
-        else
-            log "Failed to apply iptables rules."
-            stop_core
-            update_description "stopped"
-        fi
+    if ! check_config_validity; then
+        exit 1
+    fi
+    
+    if ! start_core; then
+        update_description "error" "Core Start Failed"
+        exit 1
+    fi
+    
+    if run_tproxy "start"; then
+        update_description "running"
+        log "Service started successfully."
     else
-        update_description "stopped"
-        log "Failed to start core."
+        log "Failed to apply iptables rules. Rolling back..."
+        stop_core
+        update_description "error" "Iptables Failed"
+        exit 1
     fi
 }
 
 do_stop() {
+    log ">>> Stopping Service <<<"
     run_tproxy "stop"
     stop_core
     update_description "stopped"
@@ -128,14 +197,14 @@ do_stop() {
 }
 
 case "$1" in
-    start) do_start ;;
-    stop) do_stop ;;
-    toggle) 
+    start)  do_start ;;
+    stop)   do_stop ;;
+    toggle)
         if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
             do_stop
         else
             do_start
         fi
         ;;
-    *) echo "Usage: $0 {start|stop|toggle}" ;;
+    *) echo "Usage: $0 {start|stop|toggle}"; exit 1 ;;
 esac
