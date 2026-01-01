@@ -1,4 +1,4 @@
-# TProxyShell (Personal Mod)
+# TProxyShell
 
 这是一个基于 **sing-box** 的 Android 透明代理模块。
 本项目 Fork 自 [CHIZI-0618/AndroidTProxyShell](https://github.com/CHIZI-0618/AndroidTProxyShell)
@@ -16,8 +16,8 @@
 
 ## 配置
 
-    * **核心配置**：修改 `/data/adb/box/conf/config.json` (填入你的 sing-box 节点配置)。
-    * **脚本设置**：修改 `/data/adb/box/conf/settings.ini` (设置代理模式、端口、黑白名单等)。
+* **核心配置**：修改 `/data/adb/box/conf/config.json` (填入你的 sing-box 节点配置)。
+* **脚本设置**：修改 `/data/adb/box/conf/settings.ini` (设置代理模式、端口、黑白名单等)。
 
 ## 致谢
 
