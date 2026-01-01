@@ -39,11 +39,11 @@ jobs:
           PRE_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases | jq -r 'map(select(.prerelease)) | .[0].tag_name')
           echo "Detected Tag: $PRE_TAG"
           
-          echo "Downloading sing-box binary for linux-arm64..."
+          echo "Downloading sing-box binary for android-arm64..."
           # 使用 gh 命令行工具下载特定文件
           gh release download "$PRE_TAG" \
             --repo SagerNet/sing-box \
-            --pattern "*linux-arm64.tar.gz" \
+            --pattern "*android.tar.gz" \
             --output sing-box.tar.gz \
             --clobber
           
@@ -57,7 +57,7 @@ jobs:
           
           # 清理临时文件
           rm sing-box.tar.gz
-          rm -rf sing-box-*-linux-arm64
+          rm -rf sing-box-*-android-arm64
           
           # 赋予执行权限
           chmod +x bin/sing-box
