@@ -59,7 +59,7 @@ choose_action() {
 ui_print "- Starting TProxyShell installation..."
 
 ui_print "- Extracting module files..."
-unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
+unzip -o "$ZIPFILE" -x 'META-INF/*' -x 'bin/*' -x 'conf/*' -x 'scripts/*' -d "$MODPATH" >&2
 
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/action.sh" 0 0 0755
@@ -93,6 +93,7 @@ fi
 
 ui_print "- Cleaning up old version..."
 rm -rf "$SCRIPTS_DIR"
+rm -rf "$BIN_DIR"
 rm -f "$RUN_DIR/"*.log
 rm -f "$RUN_DIR/"*.pid
 
@@ -107,7 +108,7 @@ mkdir -p "$BIN_DIR"
 mkdir -p "$SCRIPTS_DIR"
 
 ui_print "- Deploying core files to /data/adb/box ..."
-unzip -o "$ZIPFILE" "box/bin/*" "box/scripts/*" "box/conf/*" -d "/data/adb/" >&2
+unzip -o "$ZIPFILE" "bin/*" "scripts/*" "conf/*" -d "$BOX_DIR" >&2
 
 if [ "$KEEP_CONFIG" = true ]; then
   ui_print "- Restoring user configuration..."
@@ -138,6 +139,11 @@ fi
 
 if [ -f "$SCRIPTS_DIR/tproxy.sh" ]; then
     set_perm "$SCRIPTS_DIR/tproxy.sh" 0 0 0755
+fi
+
+# 确保 start.sh 也有执行权限
+if [ -f "$SCRIPTS_DIR/start.sh" ]; then
+    set_perm "$SCRIPTS_DIR/start.sh" 0 0 0755
 fi
 
 ui_print "- Installation successful!"
