@@ -29,37 +29,43 @@ jobs:
             exit 1
           fi
 
-      # --- 新增步骤：自动下载 sing-box (Pre-release) ---
       - name: Download sing-box (Pre-release)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Fetching latest pre-release tag..."
-          # 使用 API 获取最新的 pre-release 标签
-          PRE_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases | jq -r 'map(select(.prerelease)) | .[0].tag_name')
+          echo "Fetching latest pre-release info..."
+          # 使用 gh api 获取完整的 Release JSON 数据（比 curl 更稳定，自动处理鉴权）
+          RELEASE_JSON=$(gh api repos/SagerNet/sing-box/releases --jq 'map(select(.prerelease)) | .[0]')
+          
+          PRE_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
           echo "Detected Tag: $PRE_TAG"
           
-          echo "Downloading sing-box binary for android-arm64..."
-          # 使用 gh 命令行工具下载特定文件
-          gh release download "$PRE_TAG" \
-            --repo SagerNet/sing-box \
-            --pattern "*android.tar.gz" \
-            --output sing-box.tar.gz \
-            --clobber
+          echo "Finding android-arm64 asset url..."
+          # 使用 jq 过滤出包含 "android-arm64" 和 "tar.gz" 的下载链接
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("android-arm64.*tar.gz")) | .browser_download_url' | head -n 1)
           
-          # 准备 bin 目录
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "Error: No android-arm64 asset found in $PRE_TAG"
+            # 打印所有可用文件名以供调试
+            echo "Available assets:"
+            echo "$RELEASE_JSON" | jq -r '.assets[].name'
+            exit 1
+          fi
+          
+          echo "Downloading sing-box from $DOWNLOAD_URL..."
+          curl -L -o sing-box.tar.gz "$DOWNLOAD_URL"
+          
+          # 解压和安装逻辑
           mkdir -p bin
-          
-          # 解压并提取二进制文件
           tar -xzf sing-box.tar.gz
-          # 查找解压文件夹内的 sing-box 文件并移动到 bin 目录
+          
+          # 移动二进制文件
           find . -name "sing-box" -type f -exec mv {} bin/ \;
           
-          # 清理临时文件
+          # 清理
           rm sing-box.tar.gz
           rm -rf sing-box-*-android-arm64
           
-          # 赋予执行权限
           chmod +x bin/sing-box
           
           echo "sing-box binary installed to bin/:"
