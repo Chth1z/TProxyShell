@@ -858,11 +858,17 @@ setup_proxy_chain() {
     if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
         $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
         log Info "Added bypass for core user $CORE_USER:$CORE_GROUP"
-    elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
+    else
+        log Warn "Kernel lacks OWNER match support."
+    fi
+    
+    if check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
         $cmd -t "$table" -A "APP_CHAIN$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
         log Info "Added bypass for marked traffic with core mark $ROUTING_MARK"
-    else
-        log Warn "Core traffic bypass not configured, may cause traffic loop"
+    fi
+    
+    if ! check_kernel_feature "NETFILTER_XT_MATCH_OWNER" && { ! check_kernel_feature "NETFILTER_XT_MATCH_MARK" || [ -z "$ROUTING_MARK" ]; }; then
+         log Warn "CRITICAL: No bypass mechanism (Owner/Mark) available! Infinite loop risk."
     fi
 
     if [ "$APP_PROXY_ENABLE" -eq 1 ]; then

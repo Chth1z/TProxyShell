@@ -18,6 +18,11 @@ PROP_FILE="$MAGISK_MOD_DIR/module.prop"
 export PATH="$BIN_DIR:/data/adb/magisk:/data/adb/ksu/bin:$PATH"
 export BOX_DIR BIN_DIR CONF_DIR SCRIPTS_DIR RUN_DIR
 
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: This script must be run as root."
+    exit 1
+fi
+
 log() {
     local timestamp="$(date +"%H:%M:%S")"
     local msg="$1"
@@ -104,9 +109,15 @@ start_core() {
     ulimit -n 65536
     ulimit -l unlimited
 
-    log "Starting sing-box core..."
+    log "Starting sing-box core with GID 3005 (net_admin)..."
     
-    nohup "$BIN_DIR/sing-box" run -c "$CONF_DIR/config.json" -D "$RUN_DIR" > /dev/null 2>&1 &
+    if command -v busybox >/dev/null 2>&1; then
+        nohup busybox setuidgid 0:3005 "$BIN_DIR/sing-box" run -c "$CONF_DIR/config.json" -D "$RUN_DIR" > /dev/null 2>&1 &
+    else
+        log "Warning: busybox not found, running as default root:root"
+        nohup "$BIN_DIR/sing-box" run -c "$CONF_DIR/config.json" -D "$RUN_DIR" > /dev/null 2>&1 &
+    fi
+    
     local pid=$!
     echo $pid > "$PID_FILE"
     
