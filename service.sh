@@ -16,33 +16,12 @@ until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 1
 done
 
-wait_count=0
-max_wait=60
-network_ready=false
+sleep 5
 
-log "System booted. Waiting for network (timeout: ${max_wait}s)..."
-
-while [ $wait_count -lt $max_wait ]; do
-    if ip route show | grep -q "default"; then
-        network_ready=true
-        break
-    fi
-    sleep 1
-    wait_count=$((wait_count + 1))
-done
-
-if [ "$network_ready" = true ]; then
-    log "Network detected after ${wait_count}s."
-else
-    log "Network check timed out (${max_wait}s). Starting service anyway..."
-fi
-
-sleep 2
+log "System boot completed. Starting service..."
 
 if [ -f "$BOX_SCRIPT" ]; then
     chmod +x "$BOX_SCRIPT"
-    
-    log "Triggering start.sh..."
 
     nohup sh "$BOX_SCRIPT" start >/dev/null 2>&1 &
 else
