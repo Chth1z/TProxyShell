@@ -13,7 +13,7 @@ ui_print() { echo "$1"; }
 
 choose_action() {
   local title="$1"
-  local default_action="$2" # true=Keep, false=Reset
+  local default_action="$2"
   local wait_time=10
   
   ui_print " "
@@ -59,7 +59,7 @@ choose_action() {
 ui_print "- Starting TProxyShell installation..."
 
 ui_print "- Extracting module files..."
-unzip -o "$ZIPFILE" -x 'META-INF/*' -x 'box/*' -d "$MODPATH" >&2
+unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
 
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/action.sh" 0 0 0755
@@ -93,6 +93,9 @@ fi
 
 ui_print "- Cleaning up old version..."
 rm -rf "$SCRIPTS_DIR"
+rm -f "$RUN_DIR/"*.log
+rm -f "$RUN_DIR/"*.pid
+
 if [ "$KEEP_CONFIG" = false ]; then
     rm -rf "$CONF_DIR"
 fi
@@ -100,9 +103,11 @@ fi
 mkdir -p "$BOX_DIR"
 mkdir -p "$CONF_DIR"
 mkdir -p "$RUN_DIR"
+mkdir -p "$BIN_DIR"
+mkdir -p "$SCRIPTS_DIR"
 
 ui_print "- Deploying core files to /data/adb/box ..."
-unzip -o "$ZIPFILE" "box/*" -d "/data/adb/" >&2
+unzip -o "$ZIPFILE" "box/bin/*" "box/scripts/*" "box/conf/*" -d "/data/adb/" >&2
 
 if [ "$KEEP_CONFIG" = true ]; then
   ui_print "- Restoring user configuration..."

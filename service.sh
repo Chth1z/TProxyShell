@@ -23,7 +23,7 @@ network_ready=false
 log "System booted. Waiting for network (timeout: ${max_wait}s)..."
 
 while [ $wait_count -lt $max_wait ]; do
-    if ip route show table 0 | grep -q "default"; then
+    if ip route show | grep -q "default"; then
         network_ready=true
         break
     fi
