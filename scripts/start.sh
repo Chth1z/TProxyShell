@@ -10,18 +10,11 @@ PID_FILE="$RUN_DIR/sing-box.pid"
 LOG_FILE="$RUN_DIR/box.log"
 
 MAGISK_MOD_DIR="/data/adb/modules/TProxyShell"
-if [ -d "/data/adb/modules_update/TProxyShell" ]; then
-    MAGISK_MOD_DIR="/data/adb/modules_update/TProxyShell"
-fi
+
 PROP_FILE="$MAGISK_MOD_DIR/module.prop"
 
 export PATH="$BIN_DIR:/data/adb/magisk:/data/adb/ksu/bin:$PATH"
 export BOX_DIR BIN_DIR CONF_DIR SCRIPTS_DIR RUN_DIR
-
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Error: This script must be run as root."
-    exit 1
-fi
 
 log() {
     local timestamp="$(date +"%H:%M:%S")"
@@ -59,7 +52,11 @@ init_environment() {
     fi
     
     if [ -f "$LOG_FILE" ] && [ $(wc -c < "$LOG_FILE") -gt 1048576 ]; then
-        mv "$LOG_FILE" "${LOG_FILE}.bak"
+        [ -f "${LOG_FILE}.2" ] && mv "${LOG_FILE}.2" "${LOG_FILE}.3"
+        [ -f "${LOG_FILE}.1" ] && mv "${LOG_FILE}.1" "${LOG_FILE}.2"
+        mv "$LOG_FILE" "${LOG_FILE}.1"
+        
+        find "$RUN_DIR" -name "box.log.*" -mtime +7 -delete 2>/dev/null
     fi
     
     chmod +x "$BIN_DIR/sing-box" 2>/dev/null
@@ -121,19 +118,26 @@ start_core() {
     local pid=$!
     echo $pid > "$PID_FILE"
     
-    if [ -f "/proc/$pid/oom_score_adj" ]; then
-        echo -1000 > "/proc/$pid/oom_score_adj"
-    fi
-
-    sleep 2
-    if kill -0 $pid 2>/dev/null; then
-        log "Core started successfully (PID: $pid)."
-        return 0
-    else
-        log "Core process died immediately."
-        rm -f "$PID_FILE"
-        return 1
-    fi
+    local max_wait=10
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        if ! kill -0 $pid 2>/dev/null; then
+            log "Core process died during startup."
+            rm -f "$PID_FILE"
+            return 1
+        fi
+        
+        if netstat -tunlp 2>/dev/null | grep -q ":${PROXY_TCP_PORT}.*LISTEN"; then
+            log "Core started successfully (PID: $pid)."
+            return 0
+        fi
+        
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    
+    log "Core started but port ${PROXY_TCP_PORT} not listening after ${max_wait}s"
+    return 1
 }
 
 stop_core() {
