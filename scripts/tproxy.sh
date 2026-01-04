@@ -1,11 +1,10 @@
 #!/system/bin/sh
 
-_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-if [ -f "${_SCRIPT_DIR}/settings.ini" ]; then
-    readonly USER_CONFIG_FILE="${_SCRIPT_DIR}/settings.ini"
-else
-    readonly USER_CONFIG_FILE="/data/adb/box/conf/settings.ini"
-fi
+readonly BOX_DIR="/data/adb/box"
+readonly CONF_DIR="$BOX_DIR/conf"
+readonly RUN_DIR="$BOX_DIR/run"
+
+readonly USER_CONFIG_FILE="$CONF_DIR/settings.ini"
 
 readonly DEFAULT_CORE_USER_GROUP="root:net_admin"
 readonly DEFAULT_ROUTING_MARK=""
@@ -39,9 +38,8 @@ readonly DEFAULT_BYPASS_APPS_LIST=""
 readonly DEFAULT_APP_PROXY_MODE="blacklist"
 
 readonly DEFAULT_BYPASS_CN_IP=0
-readonly DEFAULT_SCRIPT_DIR="$_SCRIPT_DIR"
-readonly DEFAULT_CN_IP_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
-readonly DEFAULT_CN_IPV6_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
+readonly DEFAULT_CN_IP_FILE="$RUN_DIR/cn.zone"
+readonly DEFAULT_CN_IPV6_FILE="$RUN_DIR/cn_ipv6.zone"
 readonly DEFAULT_CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
 readonly DEFAULT_CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
 
@@ -57,7 +55,6 @@ log() {
     local level="$1"
     local message="$2"
     local timestamp
-    local color_code
     local level_score=0
     local current_log_level="${LOG_LEVEL:-$DEFAULT_LOG_LEVEL}"
 
@@ -69,22 +66,22 @@ log() {
         *)     level_score=1 ;;
     esac
 
-    if [ "$level_score" -lt "$current_log_level" ]; then
-        return 0
-    fi
+    # Early return if log level filters this message
+    [ "$level_score" -lt "$current_log_level" ] && return 0
 
-    timestamp="$(date +"%H:%M:%S")"
+    timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
+    
+    # Check if output is a terminal (for color support)
     if [ -t 1 ]; then
         case "$level" in
-            Debug) color_code="\033[0;30m" ;;
-            Info)  color_code="\033[0;36m" ;;
-            Warn)  color_code="\033[1;33m" ;;
-            Error) color_code="\033[1;31m" ;;
-            *)     color_code="\033[0m" ;;
+            Debug) printf "\033[0;30m%s [%s]: %s\033[0m\n" "$timestamp" "$level" "$message" >&2 ;;
+            Info)  printf "\033[0;36m%s [%s]: %s\033[0m\n" "$timestamp" "$level" "$message" >&2 ;;
+            Warn)  printf "\033[1;33m%s [%s]: %s\033[0m\n" "$timestamp" "$level" "$message" >&2 ;;
+            Error) printf "\033[1;31m%s [%s]: %s\033[0m\n" "$timestamp" "$level" "$message" >&2 ;;
+            *)     printf "%s [%s]: %s\n" "$timestamp" "$level" "$message" >&2 ;;
         esac
-        printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
     else
-        printf "%s\n" "${timestamp} [${level}]: ${message}" >&2
+        printf "%s [%s]: %s\n" "$timestamp" "$level" "$message" >&2
     fi
 }
 
@@ -93,7 +90,6 @@ load_config() {
 
     if [ -f "$USER_CONFIG_FILE" ]; then
         log Info "Loading settings from: $USER_CONFIG_FILE"
-        export SCRIPT_DIR="$_SCRIPT_DIR"
         
         set -a
         source "$USER_CONFIG_FILE"
@@ -101,6 +97,10 @@ load_config() {
     else
         log Warn "Settings file not found at $USER_CONFIG_FILE. Using internal defaults."
     fi
+    
+    # Log level configuration
+    LOG_LEVEL="${LOG_LEVEL:-$DEFAULT_LOG_LEVEL}"
+    log Debug "LOG_LEVEL: $LOG_LEVEL"
     
     # Dry-run mode (disabled by default)
     DRY_RUN="${DRY_RUN:-$DEFAULT_DRY_RUN}"
@@ -592,15 +592,15 @@ download_cn_ip_list() {
 }
 
 setup_cn_ipset() {
-    if [ "$BYPASS_CN_IP" -eq 0 ]; then
+    [ "$BYPASS_CN_IP" -eq 0 ] && {
         log Debug "CN IP bypass is disabled, skipping ipset setup"
         return 0
-    fi
+    }
 
-    if ! command -v ipset > /dev/null 2>&1; then
+    command -v ipset >/dev/null 2>&1 || {
         log Error "ipset not found. Cannot bypass CN IPs"
         return 1
-    fi
+    }
 
     log Info "Setting up ipset for China mainland IPs"
 
@@ -608,25 +608,31 @@ setup_cn_ipset() {
         log Debug "[DRY-RUN] ipset destroy cnip"
         log Debug "[DRY-RUN] ipset destroy cnip6"
     else
-        ipset destroy cnip 2> /dev/null || true
-        ipset destroy cnip6 2> /dev/null || true
+        ipset destroy cnip 2>/dev/null || true
+        ipset destroy cnip6 2>/dev/null || true
     fi
 
-    if [ -f "$CN_IP_FILE" ]; then
-        log Debug "Loading IPv4 CIDR from $CN_IP_FILE"
-        ipv4_count=$(wc -l < "$CN_IP_FILE" 2> /dev/null || echo "0")
+    # Setup IPv4 ipset
+    if [ -f "$CN_IP_FILE" ] && [ -s "$CN_IP_FILE" ]; then
+        local ipv4_count
+        ipv4_count=$(wc -l < "$CN_IP_FILE" 2>/dev/null || echo "0")
+        log Debug "Loading $ipv4_count IPv4 CIDR entries from $CN_IP_FILE"
 
         if [ "$DRY_RUN" -eq 1 ]; then
             log Debug "[DRY-RUN] Would load $ipv4_count IPv4 CIDR entries via ipset restore"
-            log Debug "[DRY-RUN] ipset create cnip hash:net family inet hashsize 8192 maxelem 65536"
         else
-            temp_file=$(mktemp)
+            local temp_file
+            temp_file=$(mktemp) || {
+                log Error "Failed to create temporary file"
+                return 1
+            }
+            
             {
                 echo "create cnip hash:net family inet hashsize 8192 maxelem 65536"
                 awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip %s\n", $0}' "$CN_IP_FILE"
             } > "$temp_file"
 
-            if ipset restore -f "$temp_file" 2> /dev/null; then
+            if ipset restore -f "$temp_file" 2>/dev/null; then
                 log Info "Successfully loaded $ipv4_count IPv4 CIDR entries"
             else
                 log Error "Failed to create ipset 'cnip' or load IPv4 CIDR entries"
@@ -636,40 +642,40 @@ setup_cn_ipset() {
             rm -f "$temp_file"
         fi
     else
-        log Warn "CN IP file not found: $CN_IP_FILE"
+        log Warn "CN IP file not found or empty: $CN_IP_FILE"
         return 1
     fi
 
     log Info "ipset 'cnip' loaded with China mainland IPs"
 
-    if [ "$PROXY_IPV6" -eq 1 ]; then
-        if [ -f "$CN_IPV6_FILE" ]; then
-            log Debug "Loading IPv6 CIDR from $CN_IPV6_FILE"
-            ipv6_count=$(wc -l < "$CN_IPV6_FILE" 2> /dev/null || echo "0")
+    # Setup IPv6 ipset if enabled
+    if [ "$PROXY_IPV6" -eq 1 ] && [ -f "$CN_IPV6_FILE" ] && [ -s "$CN_IPV6_FILE" ]; then
+        local ipv6_count
+        ipv6_count=$(wc -l < "$CN_IPV6_FILE" 2>/dev/null || echo "0")
+        log Debug "Loading $ipv6_count IPv6 CIDR entries from $CN_IPV6_FILE"
 
-            if [ "$DRY_RUN" -eq 1 ]; then
-                log Debug "[DRY-RUN] Would load $ipv6_count IPv6 CIDR entries via ipset restore"
-                log Debug "[DRY-RUN] ipset create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
-            else
-                temp_file6=$(mktemp)
-                {
-                    echo "create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
-                    awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
-                } > "$temp_file6"
-
-                if ipset restore -f "$temp_file6" 2> /dev/null; then
-                    log Info "Successfully loaded $ipv6_count IPv6 CIDR entries"
-                else
-                    log Error "Failed to create ipset 'cnip6' or load IPv6 CIDR entries"
-                    rm -f "$temp_file6"
-                    return 1
-                fi
-                rm -f "$temp_file6"
-            fi
-            log Info "ipset 'cnip6' loaded with China mainland IPv6 IPs"
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log Debug "[DRY-RUN] Would load $ipv6_count IPv6 CIDR entries via ipset restore"
         else
-            log Warn "CN IPv6 file not found: $CN_IPV6_FILE"
+            local temp_file6
+            temp_file6=$(mktemp) || {
+                log Error "Failed to create temporary file for IPv6"
+                return 0  # Don't fail on IPv6 error
+            }
+            
+            {
+                echo "create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
+                awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
+            } > "$temp_file6"
+
+            if ipset restore -f "$temp_file6" 2>/dev/null; then
+                log Info "Successfully loaded $ipv6_count IPv6 CIDR entries"
+            else
+                log Error "Failed to create ipset 'cnip6' or load IPv6 CIDR entries"
+            fi
+            rm -f "$temp_file6"
         fi
+        log Info "ipset 'cnip6' loaded with China mainland IPv6 IPs"
     fi
 
     return 0
@@ -730,12 +736,12 @@ setup_proxy_chain() {
     if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
         $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
         $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
-        log Info "Added local address type bypass"
+        log Debug "Added local address type bypass"
     fi
 
     if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
         $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
-        log Info "Added reply connection direction bypass"
+        log Debug "Added reply connection direction bypass"
     fi
 
     # Add private IP ranges based on family
@@ -756,7 +762,7 @@ setup_proxy_chain() {
             $cmd -t "$table" -A "BYPASS_IP$suffix" -d "$subnet4" ! -p udp -j ACCEPT
         done
     fi
-    log Info "Added bypass rules for private IP ranges"
+    log Debug "Added bypass rules for private IP ranges"
 
     if [ "$BYPASS_CN_IP" -eq 1 ]; then
         ipset_name="cnip"
@@ -776,19 +782,19 @@ setup_proxy_chain() {
     $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i lo -j RETURN
     if [ "$PROXY_MOBILE" -eq 1 ]; then
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$MOBILE_INTERFACE" -j RETURN
-        log Info "Mobile interface $MOBILE_INTERFACE will be proxied"
+        log Debug "Mobile interface $MOBILE_INTERFACE will be proxied"
     else
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$MOBILE_INTERFACE" -j ACCEPT
         $cmd -t "$table" -A "BYPASS_INTERFACE$suffix" -o "$MOBILE_INTERFACE" -j ACCEPT
-        log Info "Mobile interface $MOBILE_INTERFACE will bypass proxy"
+        log Debug "Mobile interface $MOBILE_INTERFACE will bypass proxy"
     fi
     if [ "$PROXY_WIFI" -eq 1 ]; then
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$WIFI_INTERFACE" -j RETURN
-        log Info "WiFi interface $WIFI_INTERFACE will be proxied"
+        log Debug "WiFi interface $WIFI_INTERFACE will be proxied"
     else
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$WIFI_INTERFACE" -j ACCEPT
         $cmd -t "$table" -A "BYPASS_INTERFACE$suffix" -o "$WIFI_INTERFACE" -j ACCEPT
-        log Info "WiFi interface $WIFI_INTERFACE will bypass proxy"
+        log Debug "WiFi interface $WIFI_INTERFACE will bypass proxy"
     fi
     if [ "$PROXY_HOTSPOT" -eq 1 ]; then
         if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
@@ -799,22 +805,22 @@ setup_proxy_chain() {
                 subnet="192.168.43.0/24"
             fi
             $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$WIFI_INTERFACE" ! -s "$subnet" -j RETURN
-            log Info "Hotspot interface $WIFI_INTERFACE will be proxied"
+            log Debug "Hotspot interface $WIFI_INTERFACE will be proxied"
         else
             $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$HOTSPOT_INTERFACE" -j RETURN
-            log Info "Hotspot interface $HOTSPOT_INTERFACE will be proxied"
+            log Debug "Hotspot interface $HOTSPOT_INTERFACE will be proxied"
         fi
     else
         $cmd -t "$table" -A "BYPASS_INTERFACE$suffix" -o "$HOTSPOT_INTERFACE" -j ACCEPT
-        log Info "Hotspot interface $HOTSPOT_INTERFACE will bypass proxy"
+        log Debug "Hotspot interface $HOTSPOT_INTERFACE will bypass proxy"
     fi
     if [ "$PROXY_USB" -eq 1 ]; then
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$USB_INTERFACE" -j RETURN
-        log Info "USB interface $USB_INTERFACE will be proxied"
+        log Debug "USB interface $USB_INTERFACE will be proxied"
     else
         $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$USB_INTERFACE" -j ACCEPT
         $cmd -t "$table" -A "BYPASS_INTERFACE$suffix" -o "$USB_INTERFACE" -j ACCEPT
-        log Info "USB interface $USB_INTERFACE will bypass proxy"
+        log Debug "USB interface $USB_INTERFACE will bypass proxy"
     fi
     $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -j ACCEPT
     log Info "Interface proxy rules configuration completed"
@@ -828,7 +834,7 @@ setup_proxy_chain() {
                         for mac in $BYPASS_MACS_LIST; do
                             if [ -n "$mac" ]; then
                                 $cmd -t "$table" -A "MAC_CHAIN$suffix" -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j ACCEPT
-                                log Info "Added MAC bypass rule for $mac"
+                                log Debug "Added MAC bypass rule for $mac"
                             fi
                         done
                     else
@@ -841,7 +847,7 @@ setup_proxy_chain() {
                         for mac in $PROXY_MACS_LIST; do
                             if [ -n "$mac" ]; then
                                 $cmd -t "$table" -A "MAC_CHAIN$suffix" -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j RETURN
-                                log Info "Added MAC proxy rule for $mac"
+                                log Debug "Added MAC proxy rule for $mac"
                             fi
                         done
                     else
@@ -857,14 +863,14 @@ setup_proxy_chain() {
 
     if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
         $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
-        log Info "Added bypass for core user $CORE_USER:$CORE_GROUP"
+        log Debug "Added bypass for core user $CORE_USER:$CORE_GROUP"
     else
         log Warn "Kernel lacks OWNER match support."
     fi
     
     if check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
         $cmd -t "$table" -A "APP_CHAIN$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
-        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK"
+        log Debug "Added bypass for marked traffic with core mark $ROUTING_MARK"
     fi
     
     if ! check_kernel_feature "NETFILTER_XT_MATCH_OWNER" && { ! check_kernel_feature "NETFILTER_XT_MATCH_MARK" || [ -z "$ROUTING_MARK" ]; }; then
@@ -881,7 +887,7 @@ setup_proxy_chain() {
                         for uid in $uids; do
                             if [ -n "$uid" ]; then
                                 $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$uid" -j ACCEPT
-                                log Info "Added bypass for UID $uid"
+                                log Debug "Added bypass for UID $uid"
                             fi
                         done
                     else
@@ -895,7 +901,7 @@ setup_proxy_chain() {
                         for uid in $uids; do
                             if [ -n "$uid" ]; then
                                 $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$uid" -j RETURN
-                                log Info "Added proxy for UID $uid"
+                                log Debug "Added proxy for UID $uid"
                             fi
                         done
                     else
