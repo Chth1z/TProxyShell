@@ -21,15 +21,11 @@ ui_print() {
 }
 
 ui_error() {
-    ui_print " "
-    ui_print "!!! ERROR: $1"
-    ui_print " "
+    ui_print "ERROR: $1"
 }
 
 ui_success() {
-    ui_print " "
-    ui_print ">>> $1"
-    ui_print " "
+    ui_print "√ $1"
 }
 
 # --- User Input Handling ---
@@ -43,9 +39,8 @@ choose_action() {
     local wait_time=10
     
     ui_print " "
-    ui_print "*******************************************"
-    ui_print " $title"
-    ui_print "*******************************************"
+    ui_print "● $title"
+    ui_print " "
     ui_print "  [ Vol + ] : Yes / Keep"
     ui_print "  [ Vol - ] : No / Reset"
     ui_print " "
@@ -265,12 +260,6 @@ cleanup_old_installation() {
 # --- Main Installation Flow ---
 
 main() {
-    ui_print " "
-    ui_print "========================"
-    ui_print " TProxyShell Module Installer"
-    ui_print "========================"
-    ui_print " "
-    
     # Step 1: Extract module files
     if ! extract_module_files; then
         ui_error "Installation failed at module extraction"
@@ -333,9 +322,7 @@ main() {
     
     # Installation complete
     ui_print " "
-    ui_print "========================"
     ui_print " Installation Successful!"
-    ui_print "========================"
     ui_print " "
     ui_print "  > Module installed to: $MODPATH"
     ui_print "  > Core files deployed to: $BOX_DIR"
@@ -347,10 +334,6 @@ main() {
     fi
     
     ui_print " "
-    ui_print "  IMPORTANT: Please reboot your device"
-    ui_print "  to activate TProxyShell."
-    ui_print " "
-    ui_print "========================"
 }
 
 # Execute main installation
